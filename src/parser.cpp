@@ -1,110 +1,4 @@
-Token ast_token(Ast *node) {
-	switch (node->kind) {
-	case Ast_Ident:          return node->Ident.token;
-	case Ast_Implicit:       return node->Implicit;
-	case Ast_Undef:          return node->Undef;
-	case Ast_BasicLit:       return node->BasicLit.token;
-	case Ast_BasicDirective: return node->BasicDirective.token;
-	case Ast_ProcGroup:      return node->ProcGroup.token;
-	case Ast_ProcLit:        return ast_token(node->ProcLit.type);
-	case Ast_CompoundLit:
-		if (node->CompoundLit.type != nullptr) {
-			return ast_token(node->CompoundLit.type);
-		}
-		return node->CompoundLit.open;
-
-	case Ast_TagExpr:       return node->TagExpr.token;
-	case Ast_BadExpr:       return node->BadExpr.begin;
-	case Ast_UnaryExpr:     return node->UnaryExpr.op;
-	case Ast_BinaryExpr:    return ast_token(node->BinaryExpr.left);
-	case Ast_ParenExpr:     return node->ParenExpr.open;
-	case Ast_CallExpr:      return ast_token(node->CallExpr.proc);
-	case Ast_SelectorExpr:
-		if (node->SelectorExpr.selector != nullptr) {
-			return ast_token(node->SelectorExpr.selector);
-		}
-		return node->SelectorExpr.token;
-	case Ast_SelectorCallExpr:
-		if (node->SelectorCallExpr.expr != nullptr) {
-			return ast_token(node->SelectorCallExpr.expr);
-		}
-		return node->SelectorCallExpr.token;
-	case Ast_ImplicitSelectorExpr:
-		if (node->ImplicitSelectorExpr.selector != nullptr) {
-			return ast_token(node->ImplicitSelectorExpr.selector);
-		}
-		return node->ImplicitSelectorExpr.token;
-	case Ast_IndexExpr:          return node->IndexExpr.open;
-	case Ast_SliceExpr:          return node->SliceExpr.open;
-	case Ast_Ellipsis:           return node->Ellipsis.token;
-	case Ast_FieldValue:         return node->FieldValue.eq;
-	case Ast_DerefExpr:          return node->DerefExpr.op;
-	case Ast_TernaryExpr:        return ast_token(node->TernaryExpr.cond);
-	case Ast_TernaryIfExpr:      return ast_token(node->TernaryIfExpr.x);
-	case Ast_TernaryWhenExpr:    return ast_token(node->TernaryWhenExpr.x);
-	case Ast_TypeAssertion:      return ast_token(node->TypeAssertion.expr);
-	case Ast_TypeCast:           return node->TypeCast.token;
-	case Ast_AutoCast:           return node->AutoCast.token;
-	case Ast_InlineAsmExpr:      return node->InlineAsmExpr.token;
-
-	case Ast_BadStmt:            return node->BadStmt.begin;
-	case Ast_EmptyStmt:          return node->EmptyStmt.token;
-	case Ast_ExprStmt:           return ast_token(node->ExprStmt.expr);
-	case Ast_TagStmt:            return node->TagStmt.token;
-	case Ast_AssignStmt:         return node->AssignStmt.op;
-	case Ast_BlockStmt:          return node->BlockStmt.open;
-	case Ast_IfStmt:             return node->IfStmt.token;
-	case Ast_WhenStmt:           return node->WhenStmt.token;
-	case Ast_ReturnStmt:         return node->ReturnStmt.token;
-	case Ast_ForStmt:            return node->ForStmt.token;
-	case Ast_RangeStmt:          return node->RangeStmt.token;
-	case Ast_InlineRangeStmt:    return node->InlineRangeStmt.inline_token;
-	case Ast_CaseClause:         return node->CaseClause.token;
-	case Ast_SwitchStmt:         return node->SwitchStmt.token;
-	case Ast_TypeSwitchStmt:     return node->TypeSwitchStmt.token;
-	case Ast_DeferStmt:          return node->DeferStmt.token;
-	case Ast_BranchStmt:         return node->BranchStmt.token;
-	case Ast_UsingStmt:          return node->UsingStmt.token;
-
-	case Ast_BadDecl:            return node->BadDecl.begin;
-	case Ast_Label:              return node->Label.token;
-
-	case Ast_ValueDecl:          return ast_token(node->ValueDecl.names[0]);
-	case Ast_PackageDecl:        return node->PackageDecl.token;
-	case Ast_ImportDecl:         return node->ImportDecl.token;
-	case Ast_ForeignImportDecl:  return node->ForeignImportDecl.token;
-
-	case Ast_ForeignBlockDecl:   return node->ForeignBlockDecl.token;
-
-	case Ast_Attribute:
-		return node->Attribute.token;
-
-	case Ast_Field:
-		if (node->Field.names.count > 0) {
-			return ast_token(node->Field.names[0]);
-		}
-		return ast_token(node->Field.type);
-	case Ast_FieldList:
-		return node->FieldList.token;
-
-	case Ast_TypeidType:       return node->TypeidType.token;
-	case Ast_HelperType:       return node->HelperType.token;
-	case Ast_DistinctType:     return node->DistinctType.token;
-	case Ast_PolyType:         return node->PolyType.token;
-	case Ast_ProcType:         return node->ProcType.token;
-	case Ast_RelativeType:     return ast_token(node->RelativeType.tag);
-	case Ast_PointerType:      return node->PointerType.token;
-	case Ast_ArrayType:        return node->ArrayType.token;
-	case Ast_DynamicArrayType: return node->DynamicArrayType.token;
-	case Ast_StructType:       return node->StructType.token;
-	case Ast_UnionType:        return node->UnionType.token;
-	case Ast_EnumType:         return node->EnumType.token;
-	case Ast_BitSetType:       return node->BitSetType.token;
-	case Ast_MapType:          return node->MapType.token;
-	}
-
-	return empty_token;
-}
+#include "parser_pos.cpp"
 
 Token token_end_of_line(AstFile *f, Token tok) {
 	u8 const *start = f->tokenizer.start + tok.pos.offset;
@@ -115,6 +9,48 @@ Token token_end_of_line(AstFile *f, Token tok) {
 	tok.pos.column += cast(i32)(s - start) - 1;
 	return tok;
 }
+
+gbString get_file_line_as_string(TokenPos const &pos, i32 *offset_) {
+	AstFile *file = get_ast_file_from_id(pos.file_id);
+	if (file == nullptr) {
+		return nullptr;
+	}
+	isize offset = pos.offset;
+
+	u8 *start = file->tokenizer.start;
+	u8 *end = file->tokenizer.end;
+	isize len = end-start;
+	if (len < offset) {
+		return nullptr;
+	}
+
+	u8 *pos_offset = start+offset;
+
+	u8 *line_start = pos_offset;
+	u8 *line_end  = pos_offset;
+	while (line_start >= start) {
+		if (*line_start == '\n') {
+			line_start += 1;
+			break;
+		}
+		line_start -= 1;
+	}
+
+	while (line_end < end) {
+		if (*line_end == '\n') {
+			line_end -= 1;
+			break;
+		}
+		line_end += 1;
+	}
+	String the_line = make_string(line_start, line_end-line_start);
+	the_line = string_trim_whitespace(the_line);
+
+	if (offset_) *offset_ = cast(i32)(pos_offset - the_line.text);
+
+	return gb_string_make_length(heap_allocator(), the_line.text, the_line.len);
+}
+
 
 
 isize ast_node_size(AstKind kind) {
@@ -241,11 +177,6 @@ Ast *clone_ast(Ast *node) {
 		n->FieldValue.value = clone_ast(n->FieldValue.value);
 		break;
 
-	case Ast_TernaryExpr:
-		n->TernaryExpr.cond = clone_ast(n->TernaryExpr.cond);
-		n->TernaryExpr.x    = clone_ast(n->TernaryExpr.x);
-		n->TernaryExpr.y    = clone_ast(n->TernaryExpr.y);
-		break;
 	case Ast_TernaryIfExpr:
 		n->TernaryIfExpr.x    = clone_ast(n->TernaryIfExpr.x);
 		n->TernaryIfExpr.cond = clone_ast(n->TernaryIfExpr.cond);
@@ -319,11 +250,11 @@ Ast *clone_ast(Ast *node) {
 		n->RangeStmt.expr  = clone_ast(n->RangeStmt.expr);
 		n->RangeStmt.body  = clone_ast(n->RangeStmt.body);
 		break;
-	case Ast_InlineRangeStmt:
-		n->InlineRangeStmt.val0  = clone_ast(n->InlineRangeStmt.val0);
-		n->InlineRangeStmt.val1  = clone_ast(n->InlineRangeStmt.val1);
-		n->InlineRangeStmt.expr  = clone_ast(n->InlineRangeStmt.expr);
-		n->InlineRangeStmt.body  = clone_ast(n->InlineRangeStmt.body);
+	case Ast_UnrollRangeStmt:
+		n->UnrollRangeStmt.val0  = clone_ast(n->UnrollRangeStmt.val0);
+		n->UnrollRangeStmt.val1  = clone_ast(n->UnrollRangeStmt.val1);
+		n->UnrollRangeStmt.expr  = clone_ast(n->UnrollRangeStmt.expr);
+		n->UnrollRangeStmt.body  = clone_ast(n->UnrollRangeStmt.body);
 		break;
 	case Ast_CaseClause:
 		n->CaseClause.list  = clone_ast_array(n->CaseClause.list);
@@ -438,12 +369,15 @@ Ast *clone_ast(Ast *node) {
 
 void error(Ast *node, char const *fmt, ...) {
 	Token token = {};
+	TokenPos end_pos = {};
 	if (node != nullptr) {
 		token = ast_token(node);
+		end_pos = ast_end_pos(node);
 	}
+
 	va_list va;
 	va_start(va, fmt);
-	error_va(token, fmt, va);
+	error_va(token.pos, end_pos, fmt, va);
 	va_end(va);
 	if (node != nullptr && node->file != nullptr) {
 		node->file->error_count += 1;
@@ -457,7 +391,7 @@ void error_no_newline(Ast *node, char const *fmt, ...) {
 	}
 	va_list va;
 	va_start(va, fmt);
-	error_no_newline_va(token, fmt, va);
+	error_no_newline_va(token.pos, fmt, va);
 	va_end(va);
 	if (node != nullptr && node->file != nullptr) {
 		node->file->error_count += 1;
@@ -465,16 +399,28 @@ void error_no_newline(Ast *node, char const *fmt, ...) {
 }
 
 void warning(Ast *node, char const *fmt, ...) {
+	Token token = {};
+	TokenPos end_pos = {};
+	if (node != nullptr) {
+		token = ast_token(node);
+		end_pos = ast_end_pos(node);
+	}
 	va_list va;
 	va_start(va, fmt);
-	warning_va(ast_token(node), fmt, va);
+	warning_va(token.pos, end_pos, fmt, va);
 	va_end(va);
 }
 
 void syntax_error(Ast *node, char const *fmt, ...) {
+	Token token = {};
+	TokenPos end_pos = {};
+	if (node != nullptr) {
+		token = ast_token(node);
+		end_pos = ast_end_pos(node);
+	}
 	va_list va;
 	va_start(va, fmt);
-	syntax_error_va(ast_token(node), fmt, va);
+	syntax_error_va(token.pos, end_pos, fmt, va);
 	va_end(va);
 	if (node != nullptr && node->file != nullptr) {
 		node->file->error_count += 1;
@@ -646,7 +592,7 @@ Ast *ast_basic_lit(AstFile *f, Token basic_lit) {
 	return result;
 }
 
-Ast *ast_basic_directive(AstFile *f, Token token, String name) {
+Ast *ast_basic_directive(AstFile *f, Token token, Token name) {
 	Ast *result = alloc_ast_node(f, Ast_BasicDirective);
 	result->BasicDirective.token = token;
 	result->BasicDirective.name = name;
@@ -698,13 +644,6 @@ Ast *ast_compound_lit(AstFile *f, Ast *type, Array<Ast *> const &elems, Token op
 }
 
 
-Ast *ast_ternary_expr(AstFile *f, Ast *cond, Ast *x, Ast *y) {
-	Ast *result = alloc_ast_node(f, Ast_TernaryExpr);
-	result->TernaryExpr.cond = cond;
-	result->TernaryExpr.x = x;
-	result->TernaryExpr.y = y;
-	return result;
-}
 Ast *ast_ternary_if_expr(AstFile *f, Ast *x, Ast *cond, Ast *y) {
 	Ast *result = alloc_ast_node(f, Ast_TernaryIfExpr);
 	result->TernaryIfExpr.x = x;
@@ -740,6 +679,7 @@ Ast *ast_auto_cast(AstFile *f, Token token, Ast *expr) {
 	result->AutoCast.expr  = expr;
 	return result;
 }
+
 
 Ast *ast_inline_asm_expr(AstFile *f, Token token, Token open, Token close,
                          Array<Ast *> const &param_types,
@@ -851,15 +791,15 @@ Ast *ast_range_stmt(AstFile *f, Token token, Slice<Ast *> vals, Token in_token, 
 	return result;
 }
 
-Ast *ast_inline_range_stmt(AstFile *f, Token inline_token, Token for_token, Ast *val0, Ast *val1, Token in_token, Ast *expr, Ast *body) {
-	Ast *result = alloc_ast_node(f, Ast_InlineRangeStmt);
-	result->InlineRangeStmt.inline_token = inline_token;
-	result->InlineRangeStmt.for_token = for_token;
-	result->InlineRangeStmt.val0 = val0;
-	result->InlineRangeStmt.val1 = val1;
-	result->InlineRangeStmt.in_token = in_token;
-	result->InlineRangeStmt.expr  = expr;
-	result->InlineRangeStmt.body  = body;
+Ast *ast_unroll_range_stmt(AstFile *f, Token unroll_token, Token for_token, Ast *val0, Ast *val1, Token in_token, Ast *expr, Ast *body) {
+	Ast *result = alloc_ast_node(f, Ast_UnrollRangeStmt);
+	result->UnrollRangeStmt.unroll_token = unroll_token;
+	result->UnrollRangeStmt.for_token = for_token;
+	result->UnrollRangeStmt.val0 = val0;
+	result->UnrollRangeStmt.val1 = val1;
+	result->UnrollRangeStmt.in_token = in_token;
+	result->UnrollRangeStmt.expr  = expr;
+	result->UnrollRangeStmt.body  = body;
 	return result;
 }
 
@@ -1232,13 +1172,10 @@ void comsume_comment_groups(AstFile *f, Token prev) {
 }
 
 bool ignore_newlines(AstFile *f) {
-	if (build_context.strict_style) {
-	    	if (f->allow_newline) {
-	    		return f->expr_level > 0;
-	    	}
-	    	return f->expr_level >= 0;
+	if (f->allow_newline) {
+		return f->expr_level > 0;
 	}
-	return false;
+	return f->expr_level >= 0;
 }
 
 
@@ -1360,6 +1297,7 @@ Token expect_token_after(AstFile *f, TokenKind kind, char const *msg) {
 bool is_token_range(TokenKind kind) {
 	switch (kind) {
 	case Token_Ellipsis:
+	case Token_RangeFull:
 	case Token_RangeHalf:
 		return true;
 	}
@@ -1505,6 +1443,10 @@ bool is_semicolon_optional_for_node(AstFile *f, Ast *s) {
 		return false;
 	}
 
+	if (build_context.insert_semicolon) {
+		return true;
+	}
+
 	switch (s->kind) {
 	case Ast_EmptyStmt:
 	case Ast_BlockStmt:
@@ -1556,7 +1498,7 @@ bool is_semicolon_optional_for_node(AstFile *f, Ast *s) {
 }
 
 void expect_semicolon_newline_error(AstFile *f, Token const &token, Ast *s) {
-	if (build_context.strict_style && token.string == "\n") {
+	if (!build_context.insert_semicolon && token.string == "\n") {
 		switch (token.kind) {
 		case Token_CloseBrace:
 		case Token_CloseParen:
@@ -1583,6 +1525,10 @@ void expect_semicolon(AstFile *f, Ast *s) {
 	prev_token = f->prev_token;
 	if (prev_token.kind == Token_Semicolon) {
 		expect_semicolon_newline_error(f, f->prev_token, s);
+		return;
+	}
+
+	if (f->curr_token.kind == Token_EOF) {
 		return;
 	}
 
@@ -1718,11 +1664,12 @@ Array<Ast *> parse_element_list(AstFile *f) {
 Ast *parse_literal_value(AstFile *f, Ast *type) {
 	Array<Ast *> elems = {};
 	Token open = expect_token(f, Token_OpenBrace);
-	f->expr_level++;
+	isize expr_level = f->expr_level;
+	f->expr_level = 0;
 	if (f->curr_token.kind != Token_CloseBrace) {
 		elems = parse_element_list(f);
 	}
-	f->expr_level--;
+	f->expr_level = expr_level;
 	Token close = expect_closing(f, Token_CloseBrace, str_lit("compound literal"));
 
 	return ast_compound_lit(f, type, elems, open, close);
@@ -1813,6 +1760,7 @@ void parse_proc_tags(AstFile *f, u64 *tags) {
 
 		if (false) {}
 		ELSE_IF_ADD_TAG(optional_ok)
+		ELSE_IF_ADD_TAG(optional_second)
 		ELSE_IF_ADD_TAG(require_results)
 		ELSE_IF_ADD_TAG(bounds_check)
 		ELSE_IF_ADD_TAG(no_bounds_check)
@@ -1931,13 +1879,13 @@ Ast *parse_force_inlining_operand(AstFile *f, Token token) {
 		if (e->kind == Ast_ProcLit) {
 			if (expr->ProcLit.inlining != ProcInlining_none &&
 			    expr->ProcLit.inlining != pi) {
-				syntax_error(expr, "You cannot apply both '#force_inline' and '#force_no_inline' to a procedure literal");
+				syntax_error(expr, "Cannot apply both '#force_inline' and '#force_no_inline' to a procedure literal");
 			}
 			expr->ProcLit.inlining = pi;
 		} else if (e->kind == Ast_CallExpr) {
 			if (expr->CallExpr.inlining != ProcInlining_none &&
 			    expr->CallExpr.inlining != pi) {
-				syntax_error(expr, "You cannot apply both '#force_inline' and '#force_no_inline' to a procedure call");
+				syntax_error(expr, "Cannot apply both '#force_inline' and '#force_no_inline' to a procedure call");
 			}
 			expr->CallExpr.inlining = pi;
 		}
@@ -1973,12 +1921,27 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 		break;
 
 	case Token_OpenParen: {
+		bool allow_newline;
 		Token open, close;
 		// NOTE(bill): Skip the Paren Expression
 		open = expect_token(f, Token_OpenParen);
+		if (f->prev_token.kind == Token_CloseParen) {
+			close = expect_token(f, Token_CloseParen);
+			syntax_error(open, "Invalid parentheses expression with no inside expression");
+			return ast_bad_expr(f, open, close);
+		}
+
+		allow_newline = f->allow_newline;
+		if (f->expr_level < 0) {
+			f->allow_newline = false;
+		}
+
 		f->expr_level++;
 		operand = parse_expr(f, false);
 		f->expr_level--;
+
+		f->allow_newline = allow_newline;
+
 		close = expect_token(f, Token_CloseParen);
 		return ast_paren_expr(f, operand, open, close);
 	}
@@ -1995,35 +1958,28 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 		Token name = expect_token(f, Token_Ident);
 		if (name.string == "type") {
 			return ast_helper_type(f, token, parse_type(f));
-		} /* else if (name.string == "no_deferred") {
-			operand = parse_expr(f, false);
-			if (unparen_expr(operand)->kind != Ast_CallExpr) {
-				syntax_error(operand, "#no_deferred can only be applied to procedure calls");
-				operand = ast_bad_expr(f, token, f->curr_token);
-			}
-			operand->state_flags |= StateFlag_no_deferred;
-		} */ else if (name.string == "file") {
-			return ast_basic_directive(f, token, name.string);
-		} else if (name.string == "line") { return ast_basic_directive(f, token, name.string);
-		} else if (name.string == "procedure") { return ast_basic_directive(f, token, name.string);
-		} else if (name.string == "caller_location") { return ast_basic_directive(f, token, name.string);
+		} else if (name.string == "file") {
+			return ast_basic_directive(f, token, name);
+		} else if (name.string == "line") { return ast_basic_directive(f, token, name);
+		} else if (name.string == "procedure") { return ast_basic_directive(f, token, name);
+		} else if (name.string == "caller_location") { return ast_basic_directive(f, token, name);
 		} else if (name.string == "location") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			return parse_call_expr(f, tag);
 		} else if (name.string == "load") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			return parse_call_expr(f, tag);
 		} else if (name.string == "assert") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			return parse_call_expr(f, tag);
 		} else if (name.string == "defined") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			return parse_call_expr(f, tag);
 		} else if (name.string == "config") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			return parse_call_expr(f, tag);
 		} else if (name.string == "soa" || name.string == "simd") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			Ast *original_type = parse_type(f);
 			Ast *type = unparen_expr(original_type);
 			switch (type->kind) {
@@ -2035,7 +1991,7 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			}
 			return original_type;
 		} else if (name.string == "partial") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			Ast *original_type = parse_type(f);
 			Ast *type = unparen_expr(original_type);
 			switch (type->kind) {
@@ -2047,6 +2003,10 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			return original_type;
 		} else if (name.string == "bounds_check") {
 			Ast *operand = parse_expr(f, lhs);
+			if (operand == nullptr) {
+				syntax_error(token, "Invalid expresssion for #%.*s", LIT(name.string));
+				return nullptr;
+			}
 			operand->state_flags |= StateFlag_bounds_check;
 			if ((operand->state_flags & StateFlag_no_bounds_check) != 0) {
 				syntax_error(token, "#bounds_check and #no_bounds_check cannot be applied together");
@@ -2054,13 +2014,17 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			return operand;
 		} else if (name.string == "no_bounds_check") {
 			Ast *operand = parse_expr(f, lhs);
+			if (operand == nullptr) {
+				syntax_error(token, "Invalid expresssion for #%.*s", LIT(name.string));
+				return nullptr;
+			}
 			operand->state_flags |= StateFlag_no_bounds_check;
 			if ((operand->state_flags & StateFlag_bounds_check) != 0) {
 				syntax_error(token, "#bounds_check and #no_bounds_check cannot be applied together");
 			}
 			return operand;
 		} else if (name.string == "relative") {
-			Ast *tag = ast_basic_directive(f, token, name.string);
+			Ast *tag = ast_basic_directive(f, token, name);
 			tag = parse_call_expr(f, tag);
 			Ast *type = parse_type(f);
 			return ast_relative_type(f, tag, type);
@@ -2111,11 +2075,14 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			return ast_proc_group(f, token, open, close, args);
 		}
 
+
 		Ast *type = parse_proc_type(f, token);
 		Token where_token = {};
 		Array<Ast *> where_clauses = {};
 		u64 tags = 0;
+
 		skip_possible_newline_for_literal(f);
+
 
 		if (f->curr_token.kind == Token_where) {
 			where_token = expect_token(f, Token_where);
@@ -2143,6 +2110,8 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			return type;
 		}
 
+		skip_possible_newline_for_literal(f);
+
 		if (allow_token(f, Token_Undef)) {
 			if (where_token.kind != Token_Invalid) {
 				syntax_error(where_token, "'where' clauses are not allowed on procedure literals without a defined body (replaced with ---)");
@@ -2154,6 +2123,14 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			f->curr_proc = type;
 			body = parse_body(f);
 			f->curr_proc = curr_proc;
+
+			// Apply the tags directly to the body rather than the type
+			if (tags & ProcTag_no_bounds_check) {
+				body->state_flags |= StateFlag_no_bounds_check;
+			}
+			if (tags & ProcTag_bounds_check) {
+				body->state_flags |= StateFlag_bounds_check;
+			}
 
 			return ast_proc_lit(f, type, body, tags, where_token, where_clauses);
 		} else if (allow_token(f, Token_do)) {
@@ -2302,7 +2279,7 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			f->expr_level = prev_level;
 		}
 
-
+		skip_possible_newline_for_literal(f);
 		Token open = expect_token_after(f, Token_OpenBrace, "struct");
 
 		isize name_count = 0;
@@ -2379,6 +2356,7 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 		}
 
 
+		skip_possible_newline_for_literal(f);
 		Token open = expect_token_after(f, Token_OpenBrace, "union");
 
 		while (f->curr_token.kind != Token_CloseBrace &&
@@ -2403,6 +2381,8 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 		if (f->curr_token.kind != Token_OpenBrace) {
 			base_type = parse_type(f);
 		}
+
+		skip_possible_newline_for_literal(f);
 		Token open = expect_token(f, Token_OpenBrace);
 
 		Array<Ast *> values = parse_element_list(f);
@@ -2494,6 +2474,7 @@ Ast *parse_operand(AstFile *f, bool lhs) {
 			}
 		}
 
+		skip_possible_newline_for_literal(f);
 		Token open = expect_token(f, Token_OpenBrace);
 		Ast *asm_string = parse_expr(f, false);
 		expect_token(f, Token_Comma);
@@ -2658,6 +2639,7 @@ Ast *parse_atom_expr(AstFile *f, Ast *operand, bool lhs) {
 
 			switch (f->curr_token.kind) {
 			case Token_Ellipsis:
+			case Token_RangeFull:
 			case Token_RangeHalf:
 				// NOTE(bill): Do not err yet
 			case Token_Colon:
@@ -2669,6 +2651,7 @@ Ast *parse_atom_expr(AstFile *f, Ast *operand, bool lhs) {
 
 			switch (f->curr_token.kind) {
 			case Token_Ellipsis:
+			case Token_RangeFull:
 			case Token_RangeHalf:
 				syntax_error(f->curr_token, "Expected a colon, not a range");
 				/* fallthrough */
@@ -2707,6 +2690,16 @@ Ast *parse_atom_expr(AstFile *f, Ast *operand, bool lhs) {
 			}
 			break;
 
+		case Token_Increment:
+		case Token_Decrement:
+			if (!lhs) {
+				Token token = advance_token(f);
+				syntax_error(token, "Postfix '%.*s' operator is not supported", LIT(token.string));
+			} else {
+				loop = false;
+			}
+			break;
+
 		default:
 			loop = false;
 			break;
@@ -2739,13 +2732,22 @@ Ast *parse_unary_expr(AstFile *f, bool lhs) {
 
 	case Token_Add:
 	case Token_Sub:
-	case Token_Not:
 	case Token_Xor:
-	case Token_And: {
+	case Token_And:
+	case Token_Not: {
 		Token token = advance_token(f);
 		Ast *expr = parse_unary_expr(f, lhs);
 		return ast_unary_expr(f, token, expr);
 	}
+
+	case Token_Increment:
+	case Token_Decrement: {
+		Token token = advance_token(f);
+		syntax_error(token, "Unary '%.*s' operator is not supported", LIT(token.string));
+		Ast *expr = parse_unary_expr(f, lhs);
+		return ast_unary_expr(f, token, expr);
+	}
+
 
 	case Token_Period: {
 		Token token = expect_token(f, Token_Period);
@@ -2775,6 +2777,7 @@ i32 token_precedence(AstFile *f, TokenKind t) {
 	case Token_when:
 		return 1;
 	case Token_Ellipsis:
+	case Token_RangeFull:
 	case Token_RangeHalf:
 		if (!f->allow_range) {
 			return 0;
@@ -2842,7 +2845,7 @@ Ast *parse_binary_expr(AstFile *f, bool lhs, i32 prec_in) {
 				Ast *x = parse_expr(f, lhs);
 				Token token_c = expect_token(f, Token_Colon);
 				Ast *y = parse_expr(f, lhs);
-				expr = ast_ternary_expr(f, cond, x, y);
+				expr = ast_ternary_if_expr(f, x, cond, y);
 			} else if (op.kind == Token_if) {
 				Ast *x = expr;
 				// Token_if
@@ -2877,6 +2880,9 @@ Ast *parse_expr(AstFile *f, bool lhs) {
 
 
 Array<Ast *> parse_expr_list(AstFile *f, bool lhs) {
+	bool allow_newline = f->allow_newline;
+	f->allow_newline = true;
+
 	auto list = array_make<Ast *>(heap_allocator());
 	for (;;) {
 		Ast *e = parse_expr(f, lhs);
@@ -2887,6 +2893,8 @@ Array<Ast *> parse_expr_list(AstFile *f, bool lhs) {
 		}
 		advance_token(f);
 	}
+
+	f->allow_newline = allow_newline;
 
 	return list;
 }
@@ -2959,7 +2967,7 @@ Ast *parse_foreign_block(AstFile *f, Token token) {
 	defer (f->in_foreign_block = prev_in_foreign_block);
 	f->in_foreign_block = true;
 
-
+	skip_possible_newline_for_literal(f);
 	open = expect_token(f, Token_OpenBrace);
 
 	while (f->curr_token.kind != Token_CloseBrace &&
@@ -3131,6 +3139,13 @@ Ast *parse_simple_stmt(AstFile *f, u32 flags) {
 		return ast_bad_stmt(f, token, f->curr_token);
 	}
 
+	switch (token.kind) {
+	case Token_Increment:
+	case Token_Decrement:
+		advance_token(f);
+		syntax_error(token, "Postfix '%.*s' statement is not supported", LIT(token.string));
+		break;
+	}
 
 
 	#if 0
@@ -3200,6 +3215,7 @@ ProcCallingConvention string_to_calling_convention(String s) {
 	if (s == "fastcall")    return ProcCC_FastCall;
 	if (s == "fast")        return ProcCC_FastCall;
 	if (s == "none")        return ProcCC_None;
+	if (s == "naked")       return ProcCC_Naked;
 	return ProcCC_Invalid;
 }
 
@@ -3222,7 +3238,7 @@ Ast *parse_proc_type(AstFile *f, Token proc_token) {
 		if (f->in_foreign_block) {
 			cc = ProcCC_ForeignBlockDefault;
 		} else {
-			cc = ProcCC_Odin;
+			cc = default_calling_convention();
 		}
 	}
 
@@ -3545,7 +3561,9 @@ Ast *parse_field_list(AstFile *f, isize *name_count_, u32 allowed_flags, TokenKi
 		if (f->curr_token.kind != Token_Eq) {
 			type = parse_var_type(f, allow_ellipsis, allow_typeid_token);
 			Ast *tt = unparen_expr(type);
-			if (is_signature && !any_polymorphic_names && tt->kind == Ast_TypeidType && tt->TypeidType.specialization != nullptr) {
+			if (tt == nullptr) {
+				syntax_error(f->prev_token, "Invalid type expression in field list");
+			} else if (is_signature && !any_polymorphic_names && tt->kind == Ast_TypeidType && tt->TypeidType.specialization != nullptr) {
 				syntax_error(type, "Specialization of typeid is not allowed without polymorphic names");
 			}
 		}
@@ -3776,7 +3794,8 @@ Ast *parse_if_stmt(AstFile *f) {
 	}
 
 	skip_possible_newline_for_literal(f);
-	if (allow_token(f, Token_else)) {
+	if (f->curr_token.kind == Token_else) {
+		Token else_token = expect_token(f, Token_else);
 		switch (f->curr_token.kind) {
 		case Token_if:
 			else_stmt = parse_if_stmt(f);
@@ -3785,12 +3804,12 @@ Ast *parse_if_stmt(AstFile *f) {
 			else_stmt = parse_block_stmt(f, false);
 			break;
 		case Token_do: {
-			Token arrow = expect_token(f, Token_do);
+			expect_token(f, Token_do);
 			else_stmt = convert_stmt_to_body(f, parse_stmt(f));
 			if (build_context.disallow_do) {
 				syntax_error(else_stmt, "'do' has been disallowed");
-			} else if (!ast_on_same_line(cond, body)) {
-				syntax_error(body, "The body of a 'do' be on the same line as 'else'");
+			} else if (!ast_on_same_line(else_stmt, else_stmt)) {
+				syntax_error(else_stmt, "The body of a 'do' be on the same line as 'else'");
 			}
 		} break;
 		default:
@@ -3832,7 +3851,8 @@ Ast *parse_when_stmt(AstFile *f) {
 	}
 
 	skip_possible_newline_for_literal(f);
-	if (allow_token(f, Token_else)) {
+	if (f->curr_token.kind == Token_else) {
+		Token else_token = expect_token(f, Token_else);
 		switch (f->curr_token.kind) {
 		case Token_when:
 			else_stmt = parse_when_stmt(f);
@@ -3841,12 +3861,12 @@ Ast *parse_when_stmt(AstFile *f) {
 			else_stmt = parse_block_stmt(f, true);
 			break;
 		case Token_do: {
-			Token arrow = expect_token(f, Token_do);
+			expect_token(f, Token_do);
 			else_stmt = convert_stmt_to_body(f, parse_stmt(f));
 			if (build_context.disallow_do) {
 				syntax_error(else_stmt, "'do' has been disallowed");
-			} else if (!ast_on_same_line(cond, body)) {
-				syntax_error(body, "The body of a 'do' be on the same line as 'else'");
+			} else if (!ast_on_same_line(else_token, else_stmt)) {
+				syntax_error(else_stmt, "The body of a 'do' be on the same line as 'else'");
 			}
 		} break;
 		default:
@@ -3876,12 +3896,6 @@ Ast *parse_return_stmt(AstFile *f) {
 
 	while (f->curr_token.kind != Token_Semicolon) {
 		Ast *arg = parse_expr(f, false);
-		// if (f->curr_token.kind == Token_Eq) {
-		// 	Token eq = expect_token(f, Token_Eq);
-		// 	Ast *value = parse_value(f);
-		// 	arg = ast_field_value(f, arg, value, eq);
-		// }
-
 		array_add(&results, arg);
 		if (f->curr_token.kind != Token_Comma ||
 		    f->curr_token.kind == Token_EOF) {
@@ -3946,7 +3960,7 @@ Ast *parse_for_stmt(AstFile *f) {
 			}
 		}
 
-		if (!is_range && allow_token(f, Token_Semicolon)) {
+		if (!is_range && parse_control_statement_semicolon_separator(f)) {
 			init = cond;
 			cond = nullptr;
 			if (f->curr_token.kind != Token_Semicolon) {
@@ -4002,7 +4016,7 @@ Ast *parse_case_clause(AstFile *f, bool is_type) {
 	}
 	f->allow_range = prev_allow_range;
 	f->allow_in_expr = prev_allow_in_expr;
-	expect_token(f, Token_Colon); // TODO(bill): Is this the best syntax?
+	expect_token(f, Token_Colon);
 	Array<Ast *> stmts = parse_stmt_list(f);
 
 	return ast_case_clause(f, token, list, stmts);
@@ -4257,9 +4271,9 @@ Ast *parse_attribute(AstFile *f, Token token, TokenKind open_kind, TokenKind clo
 }
 
 
-Ast *parse_unrolled_for_loop(AstFile *f, Token inline_token) {
-	if (inline_token.kind == Token_inline) {
-		syntax_warning(inline_token, "'inline for' is deprecated in favour of `#unroll for'");
+Ast *parse_unrolled_for_loop(AstFile *f, Token unroll_token) {
+	if (unroll_token.kind == Token_inline) {
+		syntax_warning(unroll_token, "'inline for' is deprecated in favour of `#unroll for'");
 	}
 	Token for_token = expect_token(f, Token_for);
 	Ast *val0 = nullptr;
@@ -4307,9 +4321,19 @@ Ast *parse_unrolled_for_loop(AstFile *f, Token inline_token) {
 		body = parse_block_stmt(f, false);
 	}
 	if (bad_stmt) {
-		return ast_bad_stmt(f, inline_token, f->curr_token);
+		return ast_bad_stmt(f, unroll_token, f->curr_token);
 	}
-	return ast_inline_range_stmt(f, inline_token, for_token, val0, val1, in_token, expr, body);
+	return ast_unroll_range_stmt(f, unroll_token, for_token, val0, val1, in_token, expr, body);
+}
+
+void parse_check_directive_for_empty_statement(Ast *s, Token const &name) {
+	if (s != nullptr && s->kind == Ast_EmptyStmt) {
+		if (s->EmptyStmt.token.string == "\n") {
+			syntax_error(name, "#%.*s cannot be followed by a newline", LIT(name.string));
+		} else {
+			syntax_error(name, "#%.*s cannot be applied to an empty statement ';'", LIT(name.string));
+		}
+	}
 }
 
 Ast *parse_stmt(AstFile *f) {
@@ -4319,8 +4343,8 @@ Ast *parse_stmt(AstFile *f) {
 	// Operands
 	case Token_inline:
 		if (peek_token_kind(f, Token_for)) {
-			Token inline_token = expect_token(f, Token_inline);
-			return parse_unrolled_for_loop(f, inline_token);
+			Token unroll_token = expect_token(f, Token_inline);
+			return parse_unrolled_for_loop(f, unroll_token);
 		}
 		/* fallthrough */
 	case Token_no_inline:
@@ -4418,6 +4442,7 @@ Ast *parse_stmt(AstFile *f) {
 
 		if (tag == "bounds_check") {
 			s = parse_stmt(f);
+			parse_check_directive_for_empty_statement(s, name);
 			s->state_flags |= StateFlag_bounds_check;
 			if ((s->state_flags & StateFlag_no_bounds_check) != 0) {
 				syntax_error(token, "#bounds_check and #no_bounds_check cannot be applied together");
@@ -4425,25 +4450,10 @@ Ast *parse_stmt(AstFile *f) {
 			return s;
 		} else if (tag == "no_bounds_check") {
 			s = parse_stmt(f);
+			parse_check_directive_for_empty_statement(s, name);
 			s->state_flags |= StateFlag_no_bounds_check;
 			if ((s->state_flags & StateFlag_bounds_check) != 0) {
 				syntax_error(token, "#bounds_check and #no_bounds_check cannot be applied together");
-			}
-			return s;
-		} else if (tag == "complete") {
-			s = parse_stmt(f);
-			switch (s->kind) {
-			case Ast_SwitchStmt:
-				s->SwitchStmt.partial = false;
-				syntax_warning(token, "#complete is now the default and has been replaced with its opposite: #partial");
-				break;
-			case Ast_TypeSwitchStmt:
-				s->TypeSwitchStmt.partial = false;
-				syntax_warning(token, "#complete is now the default and has been replaced with its opposite: #partial");
-				break;
-			default:
-				syntax_error(token, "#complete can only be applied to a switch statement");
-				break;
 			}
 			return s;
 		} else if (tag == "partial") {
@@ -4455,16 +4465,19 @@ Ast *parse_stmt(AstFile *f) {
 			case Ast_TypeSwitchStmt:
 				s->TypeSwitchStmt.partial = true;
 				break;
+			case Ast_EmptyStmt:
+				parse_check_directive_for_empty_statement(s, name);
+				break;
 			default:
 				syntax_error(token, "#partial can only be applied to a switch statement");
 				break;
 			}
 			return s;
 		} else if (tag == "assert") {
-			Ast *t = ast_basic_directive(f, hash_token, tag);
+			Ast *t = ast_basic_directive(f, hash_token, name);
 			return ast_expr_stmt(f, parse_call_expr(f, t));
 		} else if (tag == "panic") {
-			Ast *t = ast_basic_directive(f, hash_token, tag);
+			Ast *t = ast_basic_directive(f, hash_token, name);
 			return ast_expr_stmt(f, parse_call_expr(f, t));
 		} else if (name.string == "force_inline" ||
 		           name.string == "force_no_inline") {
@@ -4507,7 +4520,7 @@ Ast *parse_stmt(AstFile *f) {
 		case Token_OpenBrace:
 			return parse_block_stmt(f, true);
 		case Token_do: {
-			Token arrow = expect_token(f, Token_do);
+			expect_token(f, Token_do);
 			Ast *stmt = convert_stmt_to_body(f, parse_stmt(f));
 			if (build_context.disallow_do) {
 				syntax_error(stmt, "'do' has been disallowed");
@@ -4551,13 +4564,11 @@ ParseFileError init_ast_file(AstFile *f, String fullpath, TokenPos *err_pos) {
 	GB_ASSERT(f != nullptr);
 	f->fullpath = string_trim_whitespace(fullpath); // Just in case
 	set_file_path_string(f->id, fullpath);
+	set_ast_file_from_id(f->id, f);
 	if (!string_ends_with(f->fullpath, str_lit(".odin"))) {
 		return ParseFile_WrongExtension;
 	}
-	TokenizerFlags tokenizer_flags = TokenizerFlag_None;
-	if (build_context.insert_semicolon) {
-		tokenizer_flags = TokenizerFlag_InsertSemicolon;
-	}
+	TokenizerFlags tokenizer_flags = TokenizerFlag_InsertSemicolon;
 
 	zero_item(&f->tokenizer);
 	f->tokenizer.curr_file_id = f->id;
@@ -4653,8 +4664,10 @@ bool init_parser(Parser *p) {
 	string_map_init(&p->package_map, heap_allocator());
 	array_init(&p->packages, heap_allocator());
 	array_init(&p->package_imports, heap_allocator());
+	gb_mutex_init(&p->import_mutex);
 	gb_mutex_init(&p->file_add_mutex);
 	gb_mutex_init(&p->file_decl_mutex);
+	mpmc_init(&p->file_error_queue, heap_allocator(), 1024);
 	return true;
 }
 
@@ -4678,8 +4691,10 @@ void destroy_parser(Parser *p) {
 	array_free(&p->package_imports);
 	string_set_destroy(&p->imported_files);
 	string_map_destroy(&p->package_map);
+	gb_mutex_destroy(&p->import_mutex);
 	gb_mutex_destroy(&p->file_add_mutex);
 	gb_mutex_destroy(&p->file_decl_mutex);
+	mpmc_destroy(&p->file_error_queue);
 }
 
 
@@ -4707,6 +4722,9 @@ ParseFileError process_imported_file(Parser *p, ImportedFile const &imported_fil
 WORKER_TASK_PROC(parser_worker_proc) {
 	ParserWorkerData *wd = cast(ParserWorkerData *)data;
 	ParseFileError err = process_imported_file(wd->parser, wd->imported_file);
+	if (err != ParseFile_None) {
+		mpmc_enqueue(&wd->parser->file_error_queue, err);
+	}
 	return cast(isize)err;
 }
 
@@ -4764,8 +4782,8 @@ void parser_add_foreign_file_to_process(Parser *p, AstPackage *pkg, AstForeignFi
 AstPackage *try_add_import_path(Parser *p, String const &path, String const &rel_path, TokenPos pos, PackageKind kind = Package_Normal) {
 	String const FILE_EXT = str_lit(".odin");
 
-	gb_mutex_lock(&p->file_add_mutex);
-	defer (gb_mutex_unlock(&p->file_add_mutex));
+	gb_mutex_lock(&p->import_mutex);
+	defer (gb_mutex_unlock(&p->import_mutex));
 
 	if (string_set_exists(&p->imported_files, path)) {
 		return nullptr;
@@ -4848,7 +4866,9 @@ AstPackage *try_add_import_path(Parser *p, String const &path, String const &rel
 }
 
 gb_global Rune illegal_import_runes[] = {
-	'"', '\'', '`', ' ', '\t', '\r', '\n', '\v', '\f',
+	'"', '\'', '`',
+	// ' ',
+	'\t', '\r', '\n', '\v', '\f',
 	'\\', // NOTE(bill): Disallow windows style filepaths
 	'!', '$', '%', '^', '&', '*', '(', ')', '=', '+',
 	'[', ']', '{', '}',
@@ -5116,7 +5136,7 @@ void parse_setup_file_decls(Parser *p, AstFile *f, String base_dir, Slice<Ast *>
 			for_array(fp_idx, fl->filepaths) {
 				String file_str = fl->filepaths[fp_idx].string;
 				String fullpath = file_str;
-				if (build_context.metrics.os != TargetOs_js) {
+				if (allow_check_foreign_filepath()) {
 					String foreign_path = {};
 					bool ok = determine_path_from_string(&p->file_decl_mutex, node, base_dir, file_str, &foreign_path);
 					if (!ok) {
@@ -5458,10 +5478,7 @@ ParseFileError parse_packages(Parser *p, String init_filename) {
 	thread_pool_start(&parser_thread_pool);
 	thread_pool_wait_to_process(&parser_thread_pool);
 
-	// NOTE(bill): Get the last error and use that
-	for (isize i = parser_thread_pool.task_tail-1; i >= 0; i--) {
-		WorkerTask *task = &parser_thread_pool.tasks[i];
-		ParseFileError err = cast(ParseFileError)task->result;
+	for (ParseFileError err = ParseFile_None; mpmc_dequeue(&p->file_error_queue, &err); /**/) {
 		if (err != ParseFile_None) {
 			return err;
 		}

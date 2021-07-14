@@ -86,7 +86,7 @@ print_encoded_rune :: proc "contextless" (r: rune) {
 	print_byte('\'');
 }
 
-print_rune :: proc "contextless" (r: rune) -> (int, _OS_Errno) {
+print_rune :: proc "contextless" (r: rune) -> (int, _OS_Errno) #no_bounds_check {
 	RUNE_SELF :: 0x80;
 
 	if r < RUNE_SELF {
@@ -98,7 +98,7 @@ print_rune :: proc "contextless" (r: rune) -> (int, _OS_Errno) {
 }
 
 
-print_u64 :: proc "contextless" (x: u64) {
+print_u64 :: proc "contextless" (x: u64) #no_bounds_check {
 	digits := _INTEGER_DIGITS;
 
 	a: [129]byte;
@@ -115,7 +115,7 @@ print_u64 :: proc "contextless" (x: u64) {
 }
 
 
-print_i64 :: proc "contextless" (x: i64) {
+print_i64 :: proc "contextless" (x: i64) #no_bounds_check {
 	digits := _INTEGER_DIGITS;
 	b :: i64(10);
 
@@ -347,14 +347,10 @@ print_type :: proc "contextless" (ti: ^Type_Info) {
 
 
 	case Type_Info_Simd_Vector:
-		if info.is_x86_mmx {
-			print_string("intrinsics.x86_mmx");
-		} else {
-			print_string("#simd[");
-			print_u64(u64(info.count));
-			print_byte(']');
-			print_type(info.elem);
-		}
+		print_string("#simd[");
+		print_u64(u64(info.count));
+		print_byte(']');
+		print_type(info.elem);
 
 	case Type_Info_Relative_Pointer:
 		print_string("#relative(");

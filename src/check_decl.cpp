@@ -289,17 +289,6 @@ void check_type_decl(CheckerContext *ctx, Entity *e, Ast *init_expr, Type *def) 
 	if (decl != nullptr) {
 		AttributeContext ac = {};
 		check_decl_attributes(ctx, decl->attributes, type_decl_attribute, &ac);
-		if (ac.atom_op_table != nullptr) {
-			Type *bt = base_type(e->type);
-			switch (bt->kind) {
-			case Type_Struct:
-				bt->Struct.atom_op_table = ac.atom_op_table;
-				break;
-			default:
-				error(e->token, "Only struct types can have custom atom operations");
-				break;
-			}
-		}
 	}
 
 
@@ -324,7 +313,7 @@ void check_type_decl(CheckerContext *ctx, Entity *e, Ast *init_expr, Type *def) 
 					if (is_blank_ident(name)) {
 						continue;
 					}
-					add_entity(ctx->checker, parent, nullptr, f);
+					add_entity(ctx, parent, nullptr, f);
 				}
 			}
 		}
@@ -343,17 +332,32 @@ void override_entity_in_scope(Entity *original_entity, Entity *new_entity) {
 		return;
 	}
 
-	// IMPORTANT TODO(bill)
-	// Date: 2018-09-29
-	// This assert fails on `using import` if the name of the alias is the same. What should be the expected behaviour?
-	// Namespace collision or override? Overridding is the current behaviour
+	// IMPORTANT NOTE(bill, 2021-04-10): Overriding behaviour was flawed in that the
+	// original entity was still used check checked, but the checking was only
+	// relying on "constant" data such as the Entity.type and Entity.Constant.value
 	//
-	//     using import "foo"
-	//     bar :: foo.bar;
-
-	// GB_ASSERT_MSG(found_entity == original_entity, "%.*s == %.*s", LIT(found_entity->token.string), LIT(new_entity->token.string));
+	// Therefore two things can be done: the type can be assigned to state that it
+	// has been "evaluated" and the variant data can be copied across
 
 	string_map_set(&found_scope->elements, original_name, new_entity);
+
+	original_entity->flags |= EntityFlag_Overridden;
+	original_entity->type = new_entity->type;
+	original_entity->aliased_of = new_entity;
+
+	if (original_entity->identifier == nullptr) {
+		original_entity->identifier = new_entity->identifier;
+	}
+	if (original_entity->identifier != nullptr &&
+	    original_entity->identifier->kind == Ast_Ident) {
+		original_entity->identifier->Ident.entity = new_entity;
+	}
+
+	// IMPORTANT NOTE(bill, 2021-04-10): copy only the variants
+	// This is most likely NEVER required, but it does not at all hurt to keep
+	isize offset = cast(u8 *)&original_entity->Dummy.start - cast(u8 *)original_entity;
+	isize size = gb_size_of(*original_entity) - offset;
+	gb_memmove(cast(u8 *)original_entity, cast(u8 *)new_entity, size);
 }
 
 
@@ -361,6 +365,7 @@ void override_entity_in_scope(Entity *original_entity, Entity *new_entity) {
 void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init, Type *named_type) {
 	GB_ASSERT(e->type == nullptr);
 	GB_ASSERT(e->kind == Entity_Constant);
+	init = unparen_expr(init);
 
 	if (e->flags & EntityFlag_Visited) {
 		e->type = t_invalid;
@@ -374,6 +379,7 @@ void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init,
 
 	Operand operand = {};
 
+	Entity *other_entity = nullptr;
 	if (init != nullptr) {
 		Entity *entity = nullptr;
 		if (init->kind == Ast_Ident) {
@@ -393,6 +399,18 @@ void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init,
 			e->kind = Entity_TypeName;
 			e->type = nullptr;
 
+			if (entity != nullptr && entity->type != nullptr &&
+			    is_type_polymorphic_record_unspecialized(entity->type)) {
+				DeclInfo *decl = decl_info_of_entity(e);
+				if (decl != nullptr) {
+					if (decl->attributes.count > 0) {
+						error(decl->attributes[0], "Constant alias declarations cannot have attributes");
+					}
+				}
+
+				override_entity_in_scope(e, entity);
+				return;
+			}
 			check_type_decl(ctx, e, ctx->decl->init_expr, named_type);
 			return;
 		}
@@ -412,7 +430,6 @@ void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init,
 			GB_ASSERT(operand.proc_group->kind == Entity_ProcGroup);
 			// NOTE(bill, 2020-06-10): It is better to just clone the contents than overriding the entity in the scope
 			// Thank goodness I made entities a tagged union to allow for this implace patching
-			// override_entity_in_scope(e, operand.proc_group);
 			e->kind = Entity_ProcGroup;
 			e->ProcGroup.entities = array_clone(heap_allocator(), operand.proc_group->ProcGroup.entities);
 			return;
@@ -446,8 +463,6 @@ void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init,
 			case Entity_LibraryName:
 			case Entity_ImportName:
 				{
-					override_entity_in_scope(e, entity);
-
 					DeclInfo *decl = decl_info_of_entity(e);
 					if (decl != nullptr) {
 						if (decl->attributes.count > 0) {
@@ -455,6 +470,7 @@ void check_const_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init,
 						}
 					}
 
+					override_entity_in_scope(e, entity);
 					return;
 				}
 			}
@@ -632,7 +648,7 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 	if (d->gen_proc_type != nullptr) {
 		proc_type = d->gen_proc_type;
 	} else {
-		proc_type = alloc_type_proc(e->scope, nullptr, 0, nullptr, 0, false, ProcCC_Odin);
+		proc_type = alloc_type_proc(e->scope, nullptr, 0, nullptr, 0, false, default_calling_convention());
 	}
 	e->type = proc_type;
 	ast_node(pl, ProcLit, d->proc_lit);
@@ -690,6 +706,22 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 	if (ac.test) {
 		e->flags |= EntityFlag_Test;
 	}
+	if (ac.set_cold) {
+		e->flags |= EntityFlag_Cold;
+	}
+
+	e->Procedure.optimization_mode = cast(ProcedureOptimizationMode)ac.optimization_mode;
+
+
+	switch (e->Procedure.optimization_mode) {
+	case ProcedureOptimizationMode_None:
+	case ProcedureOptimizationMode_Minimal:
+		if (pl->inlining == ProcInlining_inline) {
+			error(e->token, "#force_inline cannot be used in conjunction with the attribute 'optimization_mode' with neither \"none\" nor \"minimal\"");
+		}
+		break;
+	}
+
 	e->Procedure.is_export = ac.is_export;
 	e->deprecated_message = ac.deprecated_message;
 	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix);
@@ -714,11 +746,10 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 			error(e->token, "Procedure type of 'main' was expected to be 'proc()', got %s", str);
 			gb_string_free(str);
 		}
-		if (pt->calling_convention != ProcCC_Odin &&
-		    pt->calling_convention != ProcCC_Contextless) {
+		if (pt->calling_convention != default_calling_convention()) {
 			error(e->token, "Procedure 'main' cannot have a custom calling convention");
 		}
-		pt->calling_convention = ProcCC_Contextless;
+		pt->calling_convention = default_calling_convention();
 		if (e->pkg->kind == Package_Init) {
 			if (ctx->info->entry_point != nullptr) {
 				error(e->token, "Redeclaration of the entry pointer procedure 'main'");
@@ -755,7 +786,7 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 
 		GB_ASSERT(pl->body->kind == Ast_BlockStmt);
 		if (!pt->is_polymorphic) {
-			check_procedure_later(ctx->checker, ctx->file, e->token, d, proc_type, pl->body, pl->tags);
+			check_procedure_later(ctx, ctx->file, e->token, d, proc_type, pl->body, pl->tags);
 		}
 	} else if (!is_foreign) {
 		if (e->Procedure.is_export) {
@@ -777,7 +808,7 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 
 	if (ac.deferred_procedure.entity != nullptr) {
 		e->Procedure.deferred_procedure = ac.deferred_procedure;
-		array_add(&ctx->checker->procs_with_deferred_to_check, e);
+		mpmc_enqueue(&ctx->checker->procs_with_deferred_to_check, e);
 	}
 
 	if (is_foreign) {
@@ -789,6 +820,8 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 		e->Procedure.link_name = name;
 
 		init_entity_foreign_library(ctx, e);
+
+		mutex_lock(&ctx->info->foreign_mutex);
 
 		auto *fp = &ctx->info->foreigns;
 		StringHashKey key = string_hash_string(name);
@@ -816,12 +849,16 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 		} else {
 			string_map_set(fp, key, e);
 		}
+
+		mutex_unlock(&ctx->info->foreign_mutex);
 	} else {
 		String name = e->token.string;
 		if (e->Procedure.link_name.len > 0) {
 			name = e->Procedure.link_name;
 		}
 		if (e->Procedure.link_name.len > 0 || is_export) {
+			mutex_lock(&ctx->info->foreign_mutex);
+
 			auto *fp = &ctx->info->foreigns;
 			StringHashKey key = string_hash_string(name);
 			Entity **found = string_map_get(fp, key);
@@ -838,11 +875,13 @@ void check_proc_decl(CheckerContext *ctx, Entity *e, DeclInfo *d) {
 			} else {
 				string_map_set(fp, key, e);
 			}
+
+			mutex_unlock(&ctx->info->foreign_mutex);
 		}
 	}
 }
 
-void check_global_variable_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, Ast *init_expr) {
+void check_global_variable_decl(CheckerContext *ctx, Entity *&e, Ast *type_expr, Ast *init_expr) {
 	GB_ASSERT(e->type == nullptr);
 	GB_ASSERT(e->kind == Entity_Variable);
 
@@ -862,16 +901,15 @@ void check_global_variable_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, 
 	}
 
 	if (ac.require_declaration) {
-		array_add(&ctx->info->required_global_variables, e);
+		mpmc_enqueue(&ctx->info->required_global_variable_queue, e);
 	}
 
 
 	e->Variable.thread_local_model = ac.thread_local_model;
 	e->Variable.is_export = ac.is_export;
+	e->flags &= ~EntityFlag_Static;
 	if (ac.is_static) {
-		e->flags |= EntityFlag_Static;
-	} else {
-		e->flags &= ~EntityFlag_Static;
+		error(e->token, "@(static) is not supported for global variables, nor required");
 	}
 	ac.link_name = handle_link_name(ctx, e->token, ac.link_name, ac.link_prefix);
 
@@ -903,6 +941,9 @@ void check_global_variable_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, 
 	}
 	if (ac.link_name.len > 0) {
 		e->Variable.link_name = ac.link_name;
+	}
+	if (ac.link_section.len > 0) {
+		e->Variable.link_section = ac.link_section;
 	}
 
 	if (e->Variable.is_foreign || e->Variable.is_export) {
@@ -942,7 +983,7 @@ void check_global_variable_decl(CheckerContext *ctx, Entity *e, Ast *type_expr, 
 	check_init_variable(ctx, e, &o, str_lit("variable declaration"));
 }
 
-void check_proc_group_decl(CheckerContext *ctx, Entity *pg_entity, DeclInfo *d) {
+void check_proc_group_decl(CheckerContext *ctx, Entity *&pg_entity, DeclInfo *d) {
 	GB_ASSERT(pg_entity->kind == Entity_ProcGroup);
 	auto *pge = &pg_entity->ProcGroup;
 	String proc_group_name = pg_entity->token.string;
@@ -1232,7 +1273,8 @@ void check_proc_body(CheckerContext *ctx_, Token token, DeclInfo *decl, Type *ty
 		Entity *uvar = using_entities[i].uvar;
 		Entity *prev = scope_insert(ctx->scope, uvar);
 		if (prev != nullptr) {
-			error(e->token, "Namespace collision while 'using' '%.*s' of: %.*s", LIT(e->token.string), LIT(prev->token.string));
+			error(e->token, "Namespace collision while 'using' procedure argument '%.*s' of: %.*s", LIT(e->token.string), LIT(prev->token.string));
+			error_line("%.*s != %.*s\n", LIT(uvar->token.string), LIT(prev->token.string));
 			break;
 		}
 	}
@@ -1264,18 +1306,28 @@ void check_proc_body(CheckerContext *ctx_, Token token, DeclInfo *decl, Type *ty
 					error(bs->close, "Missing return statement at the end of the procedure");
 				}
 			}
+		} else if (type->Proc.diverging) {
+			if (!check_is_terminating(body, str_lit(""))) {
+				if (token.kind == Token_Ident) {
+					error(bs->close, "Missing diverging call at the end of the procedure '%.*s'", LIT(token.string));
+				} else {
+					// NOTE(bill): Anonymous procedure (lambda)
+					error(bs->close, "Missing diverging call at the end of the procedure");
+				}
+			}
 		}
 	}
 	check_close_scope(ctx);
 
 	check_scope_usage(ctx->checker, ctx->scope);
 
-#if 1
 	if (decl->parent != nullptr) {
 		Scope *ps = decl->parent->scope;
 		if (ps->flags & (ScopeFlag_File & ScopeFlag_Pkg & ScopeFlag_Global)) {
 			return;
 		} else {
+			mutex_lock(&ctx->info->deps_mutex);
+
 			// NOTE(bill): Add the dependencies from the procedure literal (lambda)
 			// But only at the procedure level
 			for_array(i, decl->deps.entries) {
@@ -1286,9 +1338,10 @@ void check_proc_body(CheckerContext *ctx_, Token token, DeclInfo *decl, Type *ty
 				Type *t = decl->type_info_deps.entries[i].ptr;
 				ptr_set_add(&decl->parent->type_info_deps, t);
 			}
+
+			mutex_unlock(&ctx->info->deps_mutex);
 		}
 	}
-#endif
 }
 
 

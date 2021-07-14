@@ -7,21 +7,23 @@ jobs:
     steps:
       - uses: actions/checkout@v1
       - name: Download LLVM
-        run: sudo apt-get install llvm
+        run: sudo apt-get install llvm-11 clang-11 llvm
       - name: build odin
         run: make release
       - name: Odin run
         run: ./odin run examples/demo/demo.odin
       - name: Odin check
         run: ./odin check examples/demo/demo.odin -vet
+      - name: Odin version
+        run: ./odin version
   build_macOS:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v1
       - name: Download LLVM and setup PATH
         run: |
-          brew install llvm
-          echo "/usr/local/opt/llvm/bin" >> $GITHUB_PATH
+          brew install llvm@11
+          echo "/usr/local/opt/llvm@11/bin" >> $GITHUB_PATH
           TMP_PATH=$(xcrun --show-sdk-path)/user/include
           echo "CPATH=$TMP_PATH" >> $GITHUB_ENV
       - name: build odin
@@ -30,17 +32,12 @@ jobs:
         run: ./odin run examples/demo/demo.odin
       - name: Odin check
         run: ./odin check examples/demo/demo.odin -vet
+      - name: Odin version
+        run: ./odin version
   build_windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v1
-      - name: Download and unpack LLVM bins
-        shell: powershell
-        run: |
-          cd bin
-          $ProgressPreference = "SilentlyContinue";
-          Invoke-WebRequest -Uri https://github.com/odin-lang/Odin/releases/download/llvm-windows/llvm-binaries.zip -OutFile llvm-binaries.zip
-          7z x llvm-binaries.zip > $null
       - name: build Odin
         shell: cmd
         run: |
@@ -56,5 +53,7 @@ jobs:
         run: |
           call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat
           odin check examples/demo/demo.odin -vet
+      - name: Odin version
+        run: ./odin version
 
 

@@ -1,10 +1,12 @@
 package slice
 
 import "intrinsics"
+import "builtin"
 import "core:math/bits"
 import "core:mem"
 
 _ :: intrinsics;
+_ :: builtin;
 _ :: bits;
 _ :: mem;
 
@@ -115,7 +117,7 @@ simple_equal :: proc(a, b: $T/[]$E) -> bool where intrinsics.type_is_simple_comp
 }
 
 
-has_prefix :: proc(array: $T/[]$E, needle: T) -> bool where intrinsics.type_is_comparable(E) {
+has_prefix :: proc(array: $T/[]$E, needle: E) -> bool where intrinsics.type_is_comparable(E) {
 	n := len(needle);
 	if len(array) >= n {
 		return equal(array[:n], needle);
@@ -124,7 +126,7 @@ has_prefix :: proc(array: $T/[]$E, needle: T) -> bool where intrinsics.type_is_c
 }
 
 
-has_suffix :: proc(array: $T/[]$E, needle: T) -> bool where intrinsics.type_is_comparable(E) {
+has_suffix :: proc(array: $T/[]$E, needle: E) -> bool where intrinsics.type_is_comparable(E) {
 	array := array;
 	m, n := len(array), len(needle);
 	if m >= n {
@@ -133,7 +135,7 @@ has_suffix :: proc(array: $T/[]$E, needle: T) -> bool where intrinsics.type_is_c
 	return false;
 }
 
-fill :: proc(array: $T/[]$E, value: T) {
+fill :: proc(array: $T/[]$E, value: E) {
 	for _, i in array {
 		array[i] = value;
 	}
@@ -281,7 +283,7 @@ reduce :: proc(s: $S/[]$U, initializer: $V, f: proc(V, U) -> V) -> V {
 }
 
 filter :: proc(s: $S/[]$U, f: proc(U) -> bool, allocator := context.allocator) -> S {
-	r := make([dynamic]S, 0, 0, allocator);
+	r := make([dynamic]U, 0, 0, allocator);
 	for v in s {
 		if f(v) {
 			append(&r, v);
@@ -290,6 +292,28 @@ filter :: proc(s: $S/[]$U, f: proc(U) -> bool, allocator := context.allocator) -
 	return r[:];
 }
 
+
+
+min :: proc(s: $S/[]$T) -> (res: T, ok: bool) where intrinsics.type_is_ordered(T) #optional_ok {
+	if len(s) != 0 {
+		res = s[0];
+		ok = true;
+		for v in s[1:] {
+			res = builtin.min(res, v);
+		}
+	}
+	return;
+}
+max :: proc(s: $S/[]$T) -> (res: T, ok: bool) where intrinsics.type_is_ordered(T) #optional_ok {
+	if len(s) != 0 {
+		res = s[0];
+		ok = true;
+		for v in s[1:] {
+			res = builtin.max(res, v);
+		}
+	}
+	return;
+}
 
 
 dot_product :: proc(a, b: $S/[]$T) -> T

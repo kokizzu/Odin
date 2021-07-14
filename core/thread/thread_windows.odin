@@ -3,7 +3,7 @@
 package thread
 
 import "core:runtime"
-import "core:sync"
+import sync "core:sync/sync2"
 import win32 "core:sys/windows"
 
 Thread_Os_Specific :: struct {
@@ -23,12 +23,7 @@ _create :: proc(procedure: Thread_Proc, priority := Thread_Priority.Normal) -> ^
 
 	__windows_thread_entry_proc :: proc "stdcall" (t_: rawptr) -> win32.DWORD {
 		t := (^Thread)(t_);
-		context = runtime.default_context();
-		c := context;
-		if ic, ok := t.init_context.?; ok {
-			c = ic;
-		}
-		context = c;
+		context = or_else(t.init_context.?, runtime.default_context());
 
 		t.procedure(t);
 
@@ -38,7 +33,7 @@ _create :: proc(procedure: Thread_Proc, priority := Thread_Priority.Normal) -> ^
 			}
 		}
 
-		sync.atomic_store(&t.done, true, .Sequentially_Consistent);
+		sync.atomic_store(&t.done, true);
 		return 0;
 	}
 
@@ -73,7 +68,7 @@ _is_done :: proc(using thread: ^Thread) -> bool {
 	// NOTE(tetra, 2019-10-31): Apparently using wait_for_single_object and
 	// checking if it didn't time out immediately, is not good enough,
 	// so we do it this way instead.
-	return sync.atomic_load(&done, .Sequentially_Consistent);
+	return sync.atomic_load(&done);
 }
 
 _join :: proc(using thread: ^Thread) {

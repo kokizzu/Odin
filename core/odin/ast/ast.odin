@@ -6,6 +6,7 @@ Proc_Tag :: enum {
 	Bounds_Check,
 	No_Bounds_Check,
 	Optional_Ok,
+	Optional_Second,
 }
 Proc_Tags :: distinct bit_set[Proc_Tag; u32];
 
@@ -15,16 +16,12 @@ Proc_Inlining :: enum u32 {
 	No_Inline = 2,
 }
 
-Proc_Calling_Convention :: enum i32 {
-	Invalid = 0,
-	Odin,
-	Contextless,
-	C_Decl,
-	Std_Call,
-	Fast_Call,
-	None,
-
-	Foreign_Block_Default = -1,
+Proc_Calling_Convention_Extra :: enum i32 {
+	Foreign_Block_Default,
+}
+Proc_Calling_Convention :: union {
+	string,
+	Proc_Calling_Convention_Extra,
 }
 
 Node_State_Flag :: enum {
@@ -68,7 +65,7 @@ File :: struct {
 	pkg: ^Package,
 
 	fullpath: string,
-	src:      []byte,
+	src:      string,
 
 	docs: ^Comment_Group,
 

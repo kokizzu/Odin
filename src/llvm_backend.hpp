@@ -1,4 +1,3 @@
-#if defined(LLVM_BACKEND_SUPPORT)
 #if defined(GB_SYSTEM_WINDOWS)
 #include "llvm-c/Core.h"
 #include "llvm-c/ExecutionEngine.h"
@@ -30,7 +29,6 @@
 #include <llvm-c/Transforms/Utils.h>
 #include <llvm-c/Transforms/Vectorize.h>
 #endif
-#endif
 
 struct lbProcedure;
 
@@ -49,7 +47,7 @@ enum lbAddrKind {
 	lbAddr_RelativePointer,
 	lbAddr_RelativeSlice,
 
-	lbAddr_AtomOp_index_set,
+	lbAddr_Swizzle,
 };
 
 struct lbAddr {
@@ -75,6 +73,11 @@ struct lbAddr {
 		struct {
 			bool deref;
 		} relative;
+		struct {
+			Type *type;
+			u8 count;      // 2, 3, or 4 components
+			u8 indices[4];
+		} swizzle;
 	};
 };
 
@@ -87,11 +90,10 @@ struct lbModule {
 	LLVMModuleRef mod;
 	LLVMContextRef ctx;
 
-	u64 state_flags;
+	struct lbGenerator *gen;
 
 	CheckerInfo *info;
-
-	gbMutex mutex;
+	AstPackage *pkg; // associated
 
 	Map<LLVMTypeRef> types; // Key: Type *
 	Map<Type *> llvm_types; // Key: LLVMTypeRef
@@ -111,8 +113,6 @@ struct lbModule {
 	Map<lbProcedure *> equal_procs; // Key: Type *
 	Map<lbProcedure *> hasher_procs; // Key: Type *
 
-	u32 global_array_index;
-	u32 global_generated_index;
 	u32 nested_type_name_guid;
 
 	Array<lbProcedure *> procedures_to_generate;
@@ -128,12 +128,22 @@ struct lbModule {
 };
 
 struct lbGenerator {
-	lbModule module;
 	CheckerInfo *info;
 
+	gbMutex mutex;
+
 	Array<String> output_object_paths;
+	Array<String> output_temp_paths;
 	String   output_base;
 	String   output_name;
+	Map<lbModule *> modules; // Key: AstPackage *
+	Map<lbModule *> modules_through_ctx; // Key: LLVMContextRef *
+	lbModule default_module;
+
+	Map<lbProcedure *> anonymous_proc_lits; // Key: Ast *
+
+	gbAtomic32 global_array_index;
+	gbAtomic32 global_generated_index;
 };
 
 
@@ -157,6 +167,7 @@ struct lbBranchBlocks {
 struct lbContextData {
 	lbAddr ctx;
 	isize scope_index;
+	isize uses;
 };
 
 enum lbParamPasskind {
@@ -209,8 +220,15 @@ enum lbProcedureFlag : u32 {
 	lbProcedureFlag_WithoutMemcpyPass = 1<<0,
 };
 
+struct lbCopyElisionHint {
+	lbValue ptr;
+	Ast *   ast;
+	bool    used;
+};
+
 struct lbProcedure {
 	u32 flags;
+	u16 state_flags;
 
 	lbProcedure *parent;
 	Array<lbProcedure *> children;
@@ -253,9 +271,7 @@ struct lbProcedure {
 
 	LLVMMetadataRef debug_info;
 
-	lbValue  return_ptr_hint_value;
-	Ast *    return_ptr_hint_ast;
-	bool     return_ptr_hint_used;
+	lbCopyElisionHint copy_elision_hint;
 };
 
 
@@ -269,9 +285,10 @@ String lb_mangle_name(lbModule *m, Entity *e);
 String lb_get_entity_name(lbModule *m, Entity *e, String name = {});
 
 LLVMAttributeRef lb_create_enum_attribute(LLVMContextRef ctx, char const *name, u64 value=0);
+LLVMAttributeRef lb_create_enum_attribute_with_type(LLVMContextRef ctx, char const *name, LLVMTypeRef type);
 void lb_add_proc_attribute_at_index(lbProcedure *p, isize index, char const *name, u64 value);
 void lb_add_proc_attribute_at_index(lbProcedure *p, isize index, char const *name);
-lbProcedure *lb_create_procedure(lbModule *module, Entity *entity);
+lbProcedure *lb_create_procedure(lbModule *module, Entity *entity, bool ignore_body=false);
 void lb_end_procedure(lbProcedure *p);
 
 
@@ -310,7 +327,7 @@ lbValue lb_emit_deep_field_gep(lbProcedure *p, lbValue e, Selection sel);
 lbValue lb_emit_deep_field_ev(lbProcedure *p, lbValue e, Selection sel);
 
 lbValue lb_emit_arith(lbProcedure *p, TokenKind op, lbValue lhs, lbValue rhs, Type *type);
-lbValue lb_emit_byte_swap(lbProcedure *p, lbValue value, Type *platform_type);
+lbValue lb_emit_byte_swap(lbProcedure *p, lbValue value, Type *end_type);
 void lb_emit_defer_stmts(lbProcedure *p, lbDeferExitKind kind, lbBlock *block);
 lbValue lb_emit_transmute(lbProcedure *p, lbValue value, Type *t);
 lbValue lb_emit_comp(lbProcedure *p, TokenKind op_kind, lbValue left, lbValue right);
@@ -331,7 +348,7 @@ lbContextData *lb_push_context_onto_stack_from_implicit_parameter(lbProcedure *p
 
 
 lbAddr lb_add_global_generated(lbModule *m, Type *type, lbValue value={});
-lbAddr lb_add_local(lbProcedure *p, Type *type, Entity *e=nullptr, bool zero_init=true, i32 param_index=0);
+lbAddr lb_add_local(lbProcedure *p, Type *type, Entity *e=nullptr, bool zero_init=true, i32 param_index=0, bool force_no_init=false);
 
 void lb_add_foreign_library_path(lbModule *m, Entity *e);
 
@@ -382,6 +399,8 @@ lbValue lb_gen_map_header(lbProcedure *p, lbValue map_val_ptr, Type *map_type);
 lbValue lb_gen_map_hash(lbProcedure *p, lbValue key, Type *key_type);
 void    lb_insert_dynamic_map_key_and_value(lbProcedure *p, lbAddr addr, Type *map_type, lbValue map_key, lbValue map_value, Ast *node);
 
+lbValue lb_find_procedure_value_from_entity(lbModule *m, Entity *e);
+lbValue lb_find_value_from_entity(lbModule *m, Entity *e);
 
 void lb_store_type_case_implicit(lbProcedure *p, Ast *clause, lbValue value);
 lbAddr lb_store_range_stmt_val(lbProcedure *p, Ast *stmt_val, lbValue value);
@@ -395,6 +414,15 @@ lbValue lb_emit_conv(lbProcedure *p, lbValue value, Type *t);
 
 LLVMMetadataRef lb_debug_type(lbModule *m, Type *type);
 
+lbValue lb_emit_count_ones(lbProcedure *p, lbValue x, Type *type);
+lbValue lb_emit_count_zeros(lbProcedure *p, lbValue x, Type *type);
+lbValue lb_emit_count_trailing_zeros(lbProcedure *p, lbValue x, Type *type);
+lbValue lb_emit_count_leading_zeros(lbProcedure *p, lbValue x, Type *type);
+lbValue lb_emit_reverse_bits(lbProcedure *p, lbValue x, Type *type);
+
+lbValue lb_emit_bit_set_card(lbProcedure *p, lbValue x);
+
+void lb_mem_zero_addr(lbProcedure *p, LLVMValueRef ptr, Type *type);
 
 
 #define LB_STARTUP_RUNTIME_PROC_NAME   "__$startup_runtime"
@@ -465,6 +493,7 @@ lbCallingConventionKind const lb_calling_convention_map[ProcCC_MAX] = {
 	lbCallingConvention_X86_FastCall, // ProcCC_FastCall,
 
 	lbCallingConvention_C,            // ProcCC_None,
+	lbCallingConvention_C,            // ProcCC_Naked,
 	lbCallingConvention_C,            // ProcCC_InlineAsm,
 };
 
@@ -498,4 +527,11 @@ enum {
 	DW_TAG_vector_type      = 259,
 	DW_TAG_subroutine_type  = 21,
 	DW_TAG_inheritance      = 28,
+};
+
+
+enum : LLVMAttributeIndex {
+	LLVMAttributeIndex_ReturnIndex = 0u,
+	LLVMAttributeIndex_FunctionIndex = ~0u,
+	LLVMAttributeIndex_FirstArgIndex = 1,
 };

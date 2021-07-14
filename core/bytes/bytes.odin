@@ -16,6 +16,21 @@ ptr_from_slice :: proc(str: []byte) -> ^byte {
 	return d.data;
 }
 
+truncate_to_byte :: proc(str: []byte, b: byte) -> []byte {
+	n := index_byte(str, b);
+	if n < 0 {
+		n = len(str);
+	}
+	return str[:n];
+}
+truncate_to_rune :: proc(str: []byte, r: rune) -> []byte {
+	n := index_rune(str, r);
+	if n < 0 {
+		n = len(str);
+	}
+	return str[:n];
+}
+
 // Compares two strings, returning a value representing which one comes first lexiographically.
 // -1 for `a`; 1 for `b`, or 0 if they are equal.
 compare :: proc(lhs, rhs: []byte) -> int {
@@ -76,7 +91,7 @@ equal_fold :: proc(u, v: []byte) -> bool {
 
 		if tr < utf8.RUNE_SELF {
 			switch sr {
-			case 'A'..'Z':
+			case 'A'..='Z':
 				if tr == (sr+'a')-'A' {
 					continue loop;
 				}
@@ -509,6 +524,14 @@ replace :: proc(s, old, new: []byte, n: int, allocator := context.allocator) -> 
 	w += copy(t[w:], s[start:]);
 	output = t[0:w];
 	return;
+}
+
+remove :: proc(s, key: []byte, n: int, allocator := context.allocator) -> (output: []byte, was_allocation: bool) {
+	return replace(s, key, {}, n, allocator);
+}
+
+remove_all :: proc(s, key: []byte, allocator := context.allocator) -> (output: []byte, was_allocation: bool) {
+	return remove(s, key, -1, allocator);
 }
 
 @(private) _ascii_space := [256]u8{'\t' = 1, '\n' = 1, '\v' = 1, '\f' = 1, '\r' = 1, ' ' = 1};

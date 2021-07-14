@@ -1,7 +1,9 @@
 package runtime
 
+import "intrinsics"
+
 @builtin
-Maybe :: union(T: typeid) #maybe {T};
+Maybe :: union($T: typeid) #maybe {T};
 
 @thread_local global_default_temp_allocator_data: Default_Temp_Allocator;
 
@@ -15,7 +17,7 @@ init_global_temporary_allocator :: proc(size: int, backup_allocator := context.a
 copy_slice :: proc "contextless" (dst, src: $T/[]$E) -> int {
 	n := max(0, min(len(dst), len(src)));
 	if n > 0 {
-		mem_copy(raw_data(dst), raw_data(src), n*size_of(E));
+		intrinsics.mem_copy(raw_data(dst), raw_data(src), n*size_of(E));
 	}
 	return n;
 }
@@ -23,7 +25,7 @@ copy_slice :: proc "contextless" (dst, src: $T/[]$E) -> int {
 copy_from_string :: proc "contextless" (dst: $T/[]$E/u8, src: $S/string) -> int {
 	n := max(0, min(len(dst), len(src)));
 	if n > 0 {
-		mem_copy(raw_data(dst), raw_data(src), n);
+		intrinsics.mem_copy(raw_data(dst), raw_data(src), n);
 	}
 	return n;
 }
@@ -33,26 +35,26 @@ copy :: proc{copy_slice, copy_from_string};
 
 
 @builtin
-unordered_remove :: proc(array: ^$D/[dynamic]$T, index: int, loc := #caller_location) {
+unordered_remove :: proc(array: ^$D/[dynamic]$T, index: int, loc := #caller_location) #no_bounds_check {
 	bounds_check_error_loc(loc, index, len(array));
 	n := len(array)-1;
 	if index != n {
 		array[index] = array[n];
 	}
-	pop(array);
+	(^Raw_Dynamic_Array)(array).len -= 1;
 }
 
 @builtin
-ordered_remove :: proc(array: ^$D/[dynamic]$T, index: int, loc := #caller_location) {
+ordered_remove :: proc(array: ^$D/[dynamic]$T, index: int, loc := #caller_location) #no_bounds_check {
 	bounds_check_error_loc(loc, index, len(array));
 	if index+1 < len(array) {
 		copy(array[index:], array[index+1:]);
 	}
-	pop(array);
+	(^Raw_Dynamic_Array)(array).len -= 1;
 }
 
 @builtin
-remove_range :: proc(array: ^$D/[dynamic]$T, lo, hi: int, loc := #caller_location) {
+remove_range :: proc(array: ^$D/[dynamic]$T, lo, hi: int, loc := #caller_location) #no_bounds_check {
 	slice_expr_error_lo_hi_loc(loc, lo, hi, len(array));
 	n := max(hi-lo, 0);
 	if n > 0 {
@@ -127,26 +129,30 @@ free_all :: proc{mem_free_all};
 
 
 @builtin
-delete_string :: proc(str: string, allocator := context.allocator, loc := #caller_location) {
-	mem_free(raw_data(str), allocator, loc);
+delete_string :: proc(str: string, allocator := context.allocator, loc := #caller_location) -> Allocator_Error {
+	return mem_free(raw_data(str), allocator, loc);
 }
 @builtin
-delete_cstring :: proc(str: cstring, allocator := context.allocator, loc := #caller_location) {
-	mem_free((^byte)(str), allocator, loc);
+delete_cstring :: proc(str: cstring, allocator := context.allocator, loc := #caller_location) -> Allocator_Error {
+	return mem_free((^byte)(str), allocator, loc);
 }
 @builtin
-delete_dynamic_array :: proc(array: $T/[dynamic]$E, loc := #caller_location) {
-	mem_free(raw_data(array), array.allocator, loc);
+delete_dynamic_array :: proc(array: $T/[dynamic]$E, loc := #caller_location) -> Allocator_Error {
+	return mem_free(raw_data(array), array.allocator, loc);
 }
 @builtin
-delete_slice :: proc(array: $T/[]$E, allocator := context.allocator, loc := #caller_location) {
-	mem_free(raw_data(array), allocator, loc);
+delete_slice :: proc(array: $T/[]$E, allocator := context.allocator, loc := #caller_location) -> Allocator_Error {
+	return mem_free(raw_data(array), allocator, loc);
 }
 @builtin
-delete_map :: proc(m: $T/map[$K]$V, loc := #caller_location) {
+delete_map :: proc(m: $T/map[$K]$V, loc := #caller_location) -> Allocator_Error {
 	raw := transmute(Raw_Map)m;
-	delete_slice(raw.hashes, raw.entries.allocator, loc);
-	mem_free(raw.entries.data, raw.entries.allocator, loc);
+	err := delete_slice(raw.hashes, raw.entries.allocator, loc);
+	err1 := mem_free(raw.entries.data, raw.entries.allocator, loc);
+	if err == nil {
+		err = err1;
+	}
+	return err;
 }
 
 
@@ -163,57 +169,57 @@ delete :: proc{
 // The new built-in procedure allocates memory. The first argument is a type, not a value, and the value
 // return is a pointer to a newly allocated value of that type using the specified allocator, default is context.allocator
 @builtin
-new :: proc($T: typeid, allocator := context.allocator, loc := #caller_location) -> ^T {
-	ptr := (^T)(mem_alloc(size_of(T), align_of(T), allocator, loc));
-	if ptr != nil { ptr^ = T{}; }
-	return ptr;
+new :: proc($T: typeid, allocator := context.allocator, loc := #caller_location) -> (^T, Allocator_Error) #optional_second {
+	ptr, err := mem_alloc(size_of(T), align_of(T), allocator, loc);
+	return (^T)(ptr), err;
 }
 
 @builtin
-new_clone :: proc(data: $T, allocator := context.allocator, loc := #caller_location) -> ^T {
-	ptr := (^T)(mem_alloc(size_of(T), align_of(T), allocator, loc));
-	if ptr != nil { ptr^ = data; }
-	return ptr;
+new_clone :: proc(data: $T, allocator := context.allocator, loc := #caller_location) -> (^T, Allocator_Error) #optional_second {
+	ptr, err := mem_alloc(size_of(T), align_of(T), allocator, loc);
+	res := (^T)(ptr);
+	if ptr != nil && err != .Out_Of_Memory {
+		res^ = data;
+	}
+	return res, err;
 }
 
 DEFAULT_RESERVE_CAPACITY :: 16;
 
-make_aligned :: proc($T: typeid/[]$E, auto_cast len: int, alignment: int, allocator := context.allocator, loc := #caller_location) -> T {
+make_aligned :: proc($T: typeid/[]$E, auto_cast len: int, alignment: int, allocator := context.allocator, loc := #caller_location) -> (T, Allocator_Error) #optional_second {
 	make_slice_error_loc(loc, len);
-	data := mem_alloc(size_of(E)*len, alignment, allocator, loc);
+	data, err := mem_alloc_bytes(size_of(E)*len, alignment, allocator, loc);
 	if data == nil && size_of(E) != 0 {
-		return nil;
+		return nil, err;
 	}
-	// mem_zero(data, size_of(E)*len);
-	s := Raw_Slice{data, len};
-	return transmute(T)s;
+	s := Raw_Slice{raw_data(data), len};
+	return transmute(T)s, err;
 }
 
 @builtin
-make_slice :: proc($T: typeid/[]$E, auto_cast len: int, allocator := context.allocator, loc := #caller_location) -> T {
+make_slice :: proc($T: typeid/[]$E, auto_cast len: int, allocator := context.allocator, loc := #caller_location) -> (T, Allocator_Error) #optional_second {
 	return make_aligned(T, len, align_of(E), allocator, loc);
 }
 
 @builtin
-make_dynamic_array :: proc($T: typeid/[dynamic]$E, allocator := context.allocator, loc := #caller_location) -> T {
+make_dynamic_array :: proc($T: typeid/[dynamic]$E, allocator := context.allocator, loc := #caller_location) -> (T, Allocator_Error) #optional_second {
 	return make_dynamic_array_len_cap(T, 0, DEFAULT_RESERVE_CAPACITY, allocator, loc);
 }
 
 @builtin
-make_dynamic_array_len :: proc($T: typeid/[dynamic]$E, auto_cast len: int, allocator := context.allocator, loc := #caller_location) -> T {
+make_dynamic_array_len :: proc($T: typeid/[dynamic]$E, auto_cast len: int, allocator := context.allocator, loc := #caller_location) -> (T, Allocator_Error) #optional_second {
 	return make_dynamic_array_len_cap(T, len, len, allocator, loc);
 }
 
 @builtin
-make_dynamic_array_len_cap :: proc($T: typeid/[dynamic]$E, auto_cast len: int, auto_cast cap: int, allocator := context.allocator, loc := #caller_location) -> T {
+make_dynamic_array_len_cap :: proc($T: typeid/[dynamic]$E, auto_cast len: int, auto_cast cap: int, allocator := context.allocator, loc := #caller_location) -> (T, Allocator_Error) #optional_second {
 	make_dynamic_array_error_loc(loc, len, cap);
-	data := mem_alloc(size_of(E)*cap, align_of(E), allocator, loc);
+	data, err := mem_alloc(size_of(E)*cap, align_of(E), allocator, loc);
 	s := Raw_Dynamic_Array{data, len, cap, allocator};
 	if data == nil && size_of(E) != 0 {
 		s.len, s.cap = 0, 0;
 	}
-	// mem_zero(data, size_of(E)*cap);
-	return transmute(T)s;
+	return transmute(T)s, err;
 }
 
 @builtin
@@ -264,11 +270,22 @@ reserve_map :: proc(m: ^$T/map[$K]$V, capacity: int) {
 // The delete_key built-in procedure deletes the element with the specified key (m[key]) from the map.
 // If m is nil, or there is no such element, this procedure is a no-op
 @builtin
-delete_key :: proc(m: ^$T/map[$K]$V, key: K) {
+delete_key :: proc(m: ^$T/map[$K]$V, key: K) -> (deleted_key: K, deleted_value: V) {
 	if m != nil {
 		key := key;
-		__dynamic_map_delete_key(__get_map_header(m), __get_map_hash(&key));
+		h := __get_map_header(m);
+		hash := __get_map_hash(&key);
+		fr := __dynamic_map_find(h, hash);
+		if fr.entry_index >= 0 {
+			entry := __dynamic_map_get_entry(h, fr.entry_index);
+			deleted_key   = (^K)(uintptr(entry)+h.key_offset)^;
+			deleted_value = (^V)(uintptr(entry)+h.value_offset)^;
+
+			__dynamic_map_erase(h, fr);
+		}
 	}
+
+	return;
 }
 
 
@@ -279,22 +296,18 @@ append_elem :: proc(array: ^$T/[dynamic]$E, arg: E, loc := #caller_location)  {
 		return;
 	}
 
-	arg_len := 1;
-
-	if cap(array) < len(array)+arg_len {
-		cap := 2 * cap(array) + max(8, arg_len);
+	if cap(array) < len(array)+1 {
+		cap := 2 * cap(array) + max(8, 1);
 		_ = reserve(array, cap, loc);
 	}
-	arg_len = min(cap(array)-len(array), arg_len);
-	if arg_len > 0 {
+	if cap(array)-len(array) > 0 {
 		a := (^Raw_Dynamic_Array)(array);
-		if size_of(E) != 0 {
+		when size_of(E) != 0 {
 			data := (^E)(a.data);
-			assert(data != nil);
-			val := arg;
-			mem_copy(ptr_offset(data, a.len), &val, size_of(E));
+			assert(condition=data != nil, loc=loc);
+			intrinsics.ptr_offset(data, a.len)^ = arg;
 		}
-		a.len += arg_len;
+		a.len += 1;
 	}
 }
 
@@ -317,10 +330,10 @@ append_elems :: proc(array: ^$T/[dynamic]$E, args: ..E, loc := #caller_location)
 	arg_len = min(cap(array)-len(array), arg_len);
 	if arg_len > 0 {
 		a := (^Raw_Dynamic_Array)(array);
-		if size_of(E) != 0 {
+		when size_of(E) != 0 {
 			data := (^E)(a.data);
-			assert(data != nil);
-			mem_copy(ptr_offset(data, a.len), &args[0], size_of(E) * arg_len);
+			assert(condition=data != nil, loc=loc);
+			intrinsics.mem_copy(intrinsics.ptr_offset(data, a.len), &args[0], size_of(E) * arg_len);
 		}
 		a.len += arg_len;
 	}
@@ -449,15 +462,15 @@ reserve_dynamic_array :: proc(array: ^$T/[dynamic]$E, capacity: int, loc := #cal
 	new_size  := capacity * size_of(E);
 	allocator := a.allocator;
 
-	new_data := allocator.procedure(
+	new_data, err := allocator.procedure(
 		allocator.data, .Resize, new_size, align_of(E),
-		a.data, old_size, 0, loc,
+		a.data, old_size, loc,
 	);
-	if new_data == nil {
+	if new_data == nil || err != nil {
 		return false;
 	}
 
-	a.data = new_data;
+	a.data = raw_data(new_data);
 	a.cap = capacity;
 	return true;
 }
@@ -483,15 +496,15 @@ resize_dynamic_array :: proc(array: ^$T/[dynamic]$E, length: int, loc := #caller
 	new_size  := length * size_of(E);
 	allocator := a.allocator;
 
-	new_data := allocator.procedure(
+	new_data, err := allocator.procedure(
 		allocator.data, .Resize, new_size, align_of(E),
-		a.data, old_size, 0, loc,
+		a.data, old_size, loc,
 	);
-	if new_data == nil {
+	if new_data == nil || err != nil {
 		return false;
 	}
 
-	a.data = new_data;
+	a.data = raw_data(new_data);
 	a.len = length;
 	a.cap = length;
 	return true;
@@ -535,20 +548,15 @@ excl_bit_set :: proc(s: ^$S/bit_set[$E; $U], other: S) {
 @builtin
 card :: proc(s: $S/bit_set[$E; $U]) -> int {
 	when size_of(S) == 1 {
-		foreign { @(link_name="llvm.ctpop.i8")  count_ones :: proc(i: u8) -> u8 --- }
-		return int(count_ones(transmute(u8)s));
+		return int(intrinsics.count_ones(transmute(u8)s));
 	} else when size_of(S) == 2 {
-		foreign { @(link_name="llvm.ctpop.i16") count_ones :: proc(i: u16) -> u16 --- }
-		return int(count_ones(transmute(u16)s));
+		return int(intrinsics.count_ones(transmute(u16)s));
 	} else when size_of(S) == 4 {
-		foreign { @(link_name="llvm.ctpop.i32") count_ones :: proc(i: u32) -> u32 --- }
-		return int(count_ones(transmute(u32)s));
+		return int(intrinsics.count_ones(transmute(u32)s));
 	} else when size_of(S) == 8 {
-		foreign { @(link_name="llvm.ctpop.i64") count_ones :: proc(i: u64) -> u64 --- }
-		return int(count_ones(transmute(u64)s));
+		return int(intrinsics.count_ones(transmute(u64)s));
 	} else when size_of(S) == 16 {
-		foreign { @(link_name="llvm.ctpop.i128") count_ones :: proc(i: u128) -> u128 --- }
-		return int(count_ones(transmute(u128)s));
+		return int(intrinsics.count_ones(transmute(u128)s));
 	} else {
 		#panic("Unhandled card bit_set size");
 	}

@@ -641,9 +641,9 @@ fmt_write_padding :: proc(fi: ^Info, width: int) {
 		return;
 	}
 
-	pad_byte: byte = '0';
-	if fi.space {
-		pad_byte = ' ';
+	pad_byte: byte = ' ';
+	if !fi.space {
+		pad_byte = '0';
 	}
 
 	for i := 0; i < width; i += 1 {
@@ -1013,6 +1013,7 @@ fmt_pointer :: proc(fi: ^Info, p: rawptr, verb: rune) {
 	case 'b': _fmt_int(fi, u,  2, false, 8*size_of(rawptr), __DIGITS_UPPER);
 	case 'o': _fmt_int(fi, u,  8, false, 8*size_of(rawptr), __DIGITS_UPPER);
 	case 'i', 'd': _fmt_int(fi, u, 10, false, 8*size_of(rawptr), __DIGITS_UPPER);
+	case 'z': _fmt_int(fi, u, 12, false, 8*size_of(rawptr), __DIGITS_UPPER);
 	case 'x': _fmt_int(fi, u, 16, false, 8*size_of(rawptr), __DIGITS_UPPER);
 	case 'X': _fmt_int(fi, u, 16, false, 8*size_of(rawptr), __DIGITS_UPPER);
 
@@ -1082,7 +1083,7 @@ fmt_enum :: proc(fi: ^Info, v: any, verb: rune) {
 		case 's', 'v':
 			str, ok := enum_value_to_string(v);
 			if !ok {
-				str = "!%(BAD ENUM VALUE)";
+				str = "%!(BAD ENUM VALUE)";
 			}
 			io.write_string(fi.writer, str);
 		}
@@ -1638,9 +1639,6 @@ fmt_value :: proc(fi: ^Info, v: any, verb: rune) {
 		}
 
 	case runtime.Type_Info_Simd_Vector:
-		if info.is_x86_mmx {
-			io.write_string(fi.writer, "intrinsics.x86_mmx<>");
-		}
 		io.write_byte(fi.writer, '<');
 		defer io.write_byte(fi.writer, '>');
 		for i in 0..<info.count {
@@ -1910,17 +1908,6 @@ fmt_value :: proc(fi: ^Info, v: any, verb: rune) {
 			}
 		}
 
-	}
-
-	handle_relative_pointer :: proc(ptr: ^$T) -> rawptr where intrinsics.type_is_integer(T) {
-		if ptr^ == 0 {
-			return nil;
-		}
-		when intrinsics.type_is_unsigned(T) {
-			return rawptr(uintptr(ptr) + uintptr(ptr^));
-		} else {
-			return rawptr(uintptr(ptr) + uintptr(i64(ptr^)));
-		}
 	}
 }
 

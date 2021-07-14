@@ -33,6 +33,8 @@ enum BuiltinProcId {
 	BuiltinProc_soa_zip,
 	BuiltinProc_soa_unzip,
 
+	BuiltinProc_or_else,
+
 	BuiltinProc_DIRECTIVE, // NOTE(bill): This is used for specialized hash-prefixed procedures
 
 	// "Intrinsics"
@@ -41,6 +43,29 @@ enum BuiltinProcId {
 
 	BuiltinProc_alloca,
 	BuiltinProc_cpu_relax,
+	BuiltinProc_trap,
+	BuiltinProc_debug_trap,
+	BuiltinProc_read_cycle_counter,
+
+	BuiltinProc_count_ones,
+	BuiltinProc_count_zeros,
+	BuiltinProc_count_trailing_zeros,
+	BuiltinProc_count_leading_zeros,
+	BuiltinProc_reverse_bits,
+	BuiltinProc_byte_swap,
+
+	BuiltinProc_overflow_add,
+	BuiltinProc_overflow_sub,
+	BuiltinProc_overflow_mul,
+
+	BuiltinProc_sqrt,
+
+	BuiltinProc_mem_copy,
+	BuiltinProc_mem_copy_non_overlapping,
+	BuiltinProc_mem_zero,
+
+	BuiltinProc_ptr_offset,
+	BuiltinProc_ptr_sub,
 
 	BuiltinProc_volatile_store,
 	BuiltinProc_volatile_load,
@@ -122,6 +147,7 @@ enum BuiltinProcId {
 	BuiltinProc_fixed_point_mul_sat,
 	BuiltinProc_fixed_point_div_sat,
 
+	BuiltinProc_expect,
 
 	// Constant type tests
 
@@ -142,6 +168,7 @@ BuiltinProc__type_simple_boolean_begin,
 	BuiltinProc_type_is_typeid,
 	BuiltinProc_type_is_any,
 
+	BuiltinProc_type_is_endian_platform,
 	BuiltinProc_type_is_endian_little,
 	BuiltinProc_type_is_endian_big,
 	BuiltinProc_type_is_unsigned,
@@ -182,6 +209,8 @@ BuiltinProc__type_simple_boolean_end,
 
 	BuiltinProc_type_is_specialization_of,
 
+	BuiltinProc_type_is_variant_of,
+
 	BuiltinProc_type_struct_field_count,
 
 	BuiltinProc_type_proc_parameter_count,
@@ -211,7 +240,7 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 
 	{STR_LIT("size_of"),          1, false, Expr_Expr, BuiltinProcPkg_builtin},
 	{STR_LIT("align_of"),         1, false, Expr_Expr, BuiltinProcPkg_builtin},
-	{STR_LIT("offset_of"),        2, false, Expr_Expr, BuiltinProcPkg_builtin},
+	{STR_LIT("offset_of"),        1, true, Expr_Expr, BuiltinProcPkg_builtin},
 	{STR_LIT("type_of"),          1, false, Expr_Expr, BuiltinProcPkg_builtin},
 	{STR_LIT("type_info_of"),     1, false, Expr_Expr, BuiltinProcPkg_builtin},
 	{STR_LIT("typeid_of"),        1, false, Expr_Expr, BuiltinProcPkg_builtin},
@@ -236,6 +265,8 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 	{STR_LIT("soa_zip"),          1, true,  Expr_Expr, BuiltinProcPkg_builtin},
 	{STR_LIT("soa_unzip"),        1, false, Expr_Expr, BuiltinProcPkg_builtin},
 
+	{STR_LIT("or_else"),          2, false, Expr_Expr, BuiltinProcPkg_builtin},
+
 	{STR_LIT(""),                 0, true,  Expr_Expr, BuiltinProcPkg_builtin}, // DIRECTIVE
 
 
@@ -245,6 +276,30 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 
 	{STR_LIT("alloca"),    2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("cpu_relax"), 0, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("trap"),               0, false, Expr_Stmt, BuiltinProcPkg_intrinsics, /*diverging*/true},
+	{STR_LIT("debug_trap"),         0, false, Expr_Stmt, BuiltinProcPkg_intrinsics, /*diverging*/false},
+	{STR_LIT("read_cycle_counter"), 0, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("count_ones"),           1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("count_zeros"),          1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("count_trailing_zeros"), 1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("count_leading_zeros"),  1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("reverse_bits"),         1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("byte_swap"),            1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("overflow_add"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("overflow_sub"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("overflow_mul"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("sqrt"), 1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("mem_copy"),                 3, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
+	{STR_LIT("mem_copy_non_overlapping"), 3, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
+	{STR_LIT("mem_zero"),                 2, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("ptr_offset"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+	{STR_LIT("ptr_sub"),    2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
 	{STR_LIT("volatile_store"),  2, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
 	{STR_LIT("volatile_load"),   1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
@@ -327,6 +382,9 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 	{STR_LIT("fixed_point_mul_sat"), 3, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("fixed_point_div_sat"), 3, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
+	{STR_LIT("expect"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+
+
 	{STR_LIT(""), 0, false, Expr_Stmt, BuiltinProcPkg_intrinsics},
 	{STR_LIT("type_base_type"),            1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("type_core_type"),            1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
@@ -343,6 +401,7 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 	{STR_LIT("type_is_typeid"),            1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("type_is_any"),               1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
+	{STR_LIT("type_is_endian_platform"),   1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("type_is_endian_little"),     1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("type_is_endian_big"),        1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 	{STR_LIT("type_is_unsigned"),          1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
@@ -381,6 +440,8 @@ gb_global BuiltinProc builtin_procs[BuiltinProc_COUNT] = {
 	{STR_LIT("type_has_field"),            2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
 	{STR_LIT("type_is_specialization_of"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
+
+	{STR_LIT("type_is_variant_of"), 2, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 
 	{STR_LIT("type_struct_field_count"),   1, false, Expr_Expr, BuiltinProcPkg_intrinsics},
 

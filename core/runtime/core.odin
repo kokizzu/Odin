@@ -20,6 +20,8 @@
 //
 package runtime
 
+import "intrinsics"
+
 // NOTE(bill): This must match the compiler's
 Calling_Convention :: enum u8 {
 	Invalid     = 0,
@@ -30,6 +32,7 @@ Calling_Convention :: enum u8 {
 	Fast_Call   = 5,
 
 	None        = 6,
+	Naked       = 7,
 }
 
 Type_Info_Enum_Value :: distinct i64;
@@ -118,6 +121,9 @@ Type_Info_Union :: struct {
 	variants:     []^Type_Info,
 	tag_offset:   uintptr,
 	tag_type:     ^Type_Info,
+
+	equal: Equal_Proc, // set only when the struct has .Comparable set but does not have .Simple_Compare set
+
 	custom_align: bool,
 	no_nil:       bool,
 	maybe:        bool,
@@ -144,7 +150,6 @@ Type_Info_Simd_Vector :: struct {
 	elem:       ^Type_Info,
 	elem_size:  int,
 	count:      int,
-	is_x86_mmx: bool,
 };
 Type_Info_Relative_Pointer :: struct {
 	pointer:      ^Type_Info,
@@ -250,8 +255,7 @@ Source_Code_Location :: struct {
 	procedure:    string,
 }
 
-Assertion_Failure_Proc :: #type proc(prefix, message: string, loc: Source_Code_Location);
-
+Assertion_Failure_Proc :: #type proc(prefix, message: string, loc: Source_Code_Location) -> !;
 
 // Allocation Stuff
 Allocator_Mode :: enum byte {
@@ -271,9 +275,17 @@ Allocator_Query_Info :: struct {
 	alignment: Maybe(int),
 }
 
+Allocator_Error :: enum byte {
+	None             = 0,
+	Out_Of_Memory    = 1,
+	Invalid_Pointer  = 2,
+	Invalid_Argument = 3,
+}
+
 Allocator_Proc :: #type proc(allocator_data: rawptr, mode: Allocator_Mode,
                              size, alignment: int,
-                             old_memory: rawptr, old_size: int, flags: u64 = 0, location: Source_Code_Location = #caller_location) -> rawptr;
+                             old_memory: rawptr, old_size: int,
+                             location: Source_Code_Location = #caller_location) -> ([]byte, Allocator_Error);
 Allocator :: struct {
 	procedure: Allocator_Proc,
 	data:      rawptr,
@@ -316,8 +328,6 @@ Context :: struct {
 	temp_allocator:         Allocator,
 	assertion_failure_proc: Assertion_Failure_Proc,
 	logger:                 Logger,
-
-	thread_id:  int,
 
 	user_data:  any,
 	user_ptr:   rawptr,
@@ -401,7 +411,7 @@ type_info_core :: proc "contextless" (info: ^Type_Info) -> ^Type_Info {
 }
 type_info_base_without_enum :: type_info_core;
 
-__type_info_of :: proc "contextless" (id: typeid) -> ^Type_Info {
+__type_info_of :: proc "contextless" (id: typeid) -> ^Type_Info #no_bounds_check {
 	MASK :: 1<<(8*size_of(typeid) - 8) - 1;
 	data := transmute(uintptr)id;
 	n := int(data & MASK);
@@ -417,27 +427,16 @@ typeid_base :: proc "contextless" (id: typeid) -> typeid {
 	return ti.id;
 }
 typeid_core :: proc "contextless" (id: typeid) -> typeid {
-	ti := type_info_base_without_enum(type_info_of(id));
+	ti := type_info_core(type_info_of(id));
 	return ti.id;
 }
 typeid_base_without_enum :: typeid_core;
 
 
 
-@(default_calling_convention = "none")
-foreign {
-	@(link_name="llvm.assume")
-	assume :: proc(cond: bool) ---;
-
-	@(link_name="llvm.debugtrap")
-	debug_trap :: proc() ---;
-
-	@(link_name="llvm.trap")
-	trap :: proc() -> ! ---;
-
-	@(link_name="llvm.readcyclecounter")
-	read_cycle_counter :: proc() -> u64 ---;
-}
+debug_trap         :: intrinsics.debug_trap;
+trap               :: intrinsics.trap;
+read_cycle_counter :: intrinsics.read_cycle_counter;
 
 
 
@@ -478,15 +477,13 @@ __init_context :: proc "contextless" (c: ^Context) {
 	c.temp_allocator.procedure = default_temp_allocator_proc;
 	c.temp_allocator.data = &global_default_temp_allocator_data;
 
-	c.thread_id = current_thread_id(); // NOTE(bill): This is "contextless" so it is okay to call
 	c.assertion_failure_proc = default_assertion_failure_proc;
 
 	c.logger.procedure = default_logger_proc;
 	c.logger.data = nil;
 }
 
-
-default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code_Location) {
+default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code_Location) -> ! {
 	print_caller_location(loc);
 	print_string(" ");
 	print_string(prefix);
@@ -495,6 +492,6 @@ default_assertion_failure_proc :: proc(prefix, message: string, loc: Source_Code
 		print_string(message);
 	}
 	print_byte('\n');
-	debug_trap();
-	// trap();
+	// intrinsics.debug_trap();
+	intrinsics.trap();
 }

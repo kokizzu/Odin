@@ -7,12 +7,55 @@ bool is_diverging_stmt(Ast *stmt) {
 		return false;
 	}
 	if (expr->CallExpr.proc->kind == Ast_BasicDirective) {
-		String name = expr->CallExpr.proc->BasicDirective.name;
+		String name = expr->CallExpr.proc->BasicDirective.name.string;
 		return name == "panic";
 	}
-	Type *t = type_of_expr(expr->CallExpr.proc);
+	Ast *proc = unparen_expr(expr->CallExpr.proc);
+	TypeAndValue tv = proc->tav;
+	if (tv.mode == Addressing_Builtin) {
+		Entity *e = entity_of_node(proc);
+		BuiltinProcId id = BuiltinProc_Invalid;
+		if (e != nullptr) {
+			id = cast(BuiltinProcId)e->Builtin.id;
+		} else {
+			id = BuiltinProc_DIRECTIVE;
+		}
+		return builtin_procs[id].diverging;
+	}
+	Type *t = tv.type;
 	t = base_type(t);
 	return t != nullptr && t->kind == Type_Proc && t->Proc.diverging;
+}
+
+bool contains_deferred_call(Ast *node) {
+	if (node->viral_state_flags & ViralStateFlag_ContainsDeferredProcedure) {
+		return true;
+	}
+	switch (node->kind) {
+	case Ast_ExprStmt:
+		return contains_deferred_call(node->ExprStmt.expr);
+	case Ast_AssignStmt:
+		for_array(i, node->AssignStmt.rhs) {
+			if (contains_deferred_call(node->AssignStmt.rhs[i])) {
+				return true;
+			}
+		}
+		for_array(i, node->AssignStmt.lhs) {
+			if (contains_deferred_call(node->AssignStmt.lhs[i])) {
+				return true;
+			}
+		}
+		break;
+	case Ast_ValueDecl:
+		for_array(i, node->ValueDecl.values) {
+			if (contains_deferred_call(node->ValueDecl.values[i])) {
+				return true;
+			}
+		}
+		break;
+	}
+
+	return false;
 }
 
 void check_stmt_list(CheckerContext *ctx, Slice<Ast *> const &stmts, u32 flags) {
@@ -73,6 +116,19 @@ void check_stmt_list(CheckerContext *ctx, Slice<Ast *> const &stmts, u32 flags) 
 					error(n, "Statements after a diverging procedure call are never executed");
 				}
 				break;
+			}
+		} else if (i+1 == max_non_constant_declaration) {
+			if (is_diverging_stmt(n)) {
+				for (isize j = 0; j < i; j++) {
+					Ast *stmt = stmts[j];
+					if (stmt->kind == Ast_ValueDecl && !stmt->ValueDecl.is_mutable) {
+
+					} else if (stmt->kind == Ast_DeferStmt) {
+						error(stmt, "Unreachable defer statement due to diverging procedure call at the end of the current scope");
+					} else if (contains_deferred_call(stmt)) {
+						error(stmt, "Unreachable deferred procedure call due to a diverging procedure call at the end of the current scope");
+					}
+				}
 			}
 		}
 	}
@@ -191,11 +247,24 @@ bool check_is_terminating(Ast *node, String const &label) {
 
 	case_ast_node(ws, WhenStmt, node);
 		// TODO(bill): Is this logic correct for when statements?
-		if (ws->else_stmt != nullptr) {
-			if (check_is_terminating(ws->body, label) &&
-			    check_is_terminating(ws->else_stmt, label)) {
-			    return true;
-		    }
+		auto const &tv = ws->cond->tav;
+		if (tv.mode != Addressing_Constant) {
+			// NOTE(bill): Check the things regardless as a bug occurred earlier
+			if (ws->else_stmt != nullptr) {
+				if (check_is_terminating(ws->body, label) &&
+				    check_is_terminating(ws->else_stmt, label)) {
+				    return true;
+			    }
+			}
+			return false;
+		}
+
+		if (tv.value.kind == ExactValue_Bool) {
+			if (tv.value.value_bool) {
+				return check_is_terminating(ws->body, label);
+			} else {
+				return check_is_terminating(ws->else_stmt, label);
+			}
 		}
 	case_end;
 
@@ -205,7 +274,7 @@ bool check_is_terminating(Ast *node, String const &label) {
 		}
 	case_end;
 
-	case_ast_node(rs, InlineRangeStmt, node);
+	case_ast_node(rs, UnrollRangeStmt, node);
 		return false;
 	case_end;
 
@@ -358,6 +427,9 @@ Type *check_assignment_variable(CheckerContext *ctx, Operand *lhs, Operand *rhs)
 	case Addressing_SoaVariable:
 		break;
 
+	case Addressing_SwizzleVariable:
+		break;
+
 	default: {
 		if (lhs->expr->kind == Ast_SelectorExpr) {
 			// NOTE(bill): Extra error checks
@@ -486,7 +558,7 @@ void check_label(CheckerContext *ctx, Ast *label, Ast *parent) {
 	}
 
 	Entity *e = alloc_entity_label(ctx->scope, l->name->Ident.token, t_invalid, label, parent);
-	add_entity(ctx->checker, ctx->scope, l->name, e);
+	add_entity(ctx, ctx->scope, l->name, e);
 	e->parent_proc_decl = ctx->curr_proc_decl;
 
 	if (ok) {
@@ -515,7 +587,7 @@ bool check_using_stmt_entity(CheckerContext *ctx, AstUsingStmt *us, Ast *expr, b
 				Entity *found = scope_insert(ctx->scope, f);
 				if (found != nullptr) {
 					gbString expr_str = expr_to_string(expr);
-					error(us->token, "Namespace collision while 'using' '%s' of: %.*s", expr_str, LIT(found->token.string));
+					error(us->token, "Namespace collision while 'using' enum '%s' of: %.*s", expr_str, LIT(found->token.string));
 					gb_string_free(expr_str);
 					return false;
 				}
@@ -539,7 +611,7 @@ bool check_using_stmt_entity(CheckerContext *ctx, AstUsingStmt *us, Ast *expr, b
 			if (found != nullptr) {
 				gbString expr_str = expr_to_string(expr);
 				error(us->token,
-				      "Namespace collision while 'using' '%s' of: %.*s\n"
+				      "Namespace collision while 'using' import name '%s' of: %.*s\n"
 				      "\tat %s\n"
 				      "\tat %s",
 				      expr_str, LIT(found->token.string),
@@ -663,7 +735,7 @@ void add_constant_switch_case(CheckerContext *ctx, Map<TypeAndToken> *seen, Oper
 }
 
 void check_inline_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
-	ast_node(irs, InlineRangeStmt, node);
+	ast_node(irs, UnrollRangeStmt, node);
 	check_open_scope(ctx, node);
 
 	Type *val0 = nullptr;
@@ -789,7 +861,7 @@ void check_inline_range_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 	}
 
 	for (isize i = 0; i < entity_count; i++) {
-		add_entity(ctx->checker, ctx->scope, entities[i]->identifier, entities[i]);
+		add_entity(ctx, ctx->scope, entities[i]->identifier, entities[i]);
 	}
 
 
@@ -927,6 +999,7 @@ void check_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 				TokenKind upper_op = Token_Invalid;
 				switch (be->op.kind) {
 				case Token_Ellipsis:  upper_op = Token_GtEq; break;
+				case Token_RangeFull: upper_op = Token_GtEq; break;
 				case Token_RangeHalf: upper_op = Token_Gt;   break;
 				default: GB_PANIC("Invalid range operator"); break;
 				}
@@ -948,9 +1021,44 @@ void check_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 				Operand b1 = rhs;
 				check_comparison(ctx, &a1, &b1, Token_LtEq);
 
-				add_constant_switch_case(ctx, &seen, lhs);
-				if (upper_op == Token_GtEq) {
-					add_constant_switch_case(ctx, &seen, rhs);
+				if (is_type_enum(x.type)) {
+					// TODO(bill): Fix this logic so it's fast!!!
+
+					i64 v0 = exact_value_to_i64(lhs.value);
+					i64 v1 = exact_value_to_i64(rhs.value);
+					Operand v = {};
+					v.mode = Addressing_Constant;
+					v.type = x.type;
+					v.expr = x.expr;
+
+					Type *bt = base_type(x.type);
+					GB_ASSERT(bt->kind == Type_Enum);
+					for (i64 vi = v0; vi <= v1; vi++) {
+						if (upper_op != Token_GtEq && vi == v1) {
+							break;
+						}
+
+						bool found = false;
+						for_array(j, bt->Enum.fields) {
+							Entity *f = bt->Enum.fields[j];
+							GB_ASSERT(f->kind == Entity_Constant);
+
+							i64 fv = exact_value_to_i64(f->Constant.value);
+							if (fv == vi) {
+								found = true;
+								break;
+							}
+						}
+						if (found) {
+							v.value = exact_value_i64(vi);
+							add_constant_switch_case(ctx, &seen, v);
+						}
+					}
+				} else {
+					add_constant_switch_case(ctx, &seen, lhs);
+					if (upper_op == Token_GtEq) {
+						add_constant_switch_case(ctx, &seen, rhs);
+					}
 				}
 
 				if (is_type_string(x.type)) {
@@ -995,7 +1103,7 @@ void check_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 					if (y.mode != Addressing_Constant) {
 						continue;
 					}
-
+					update_untyped_expr_type(ctx, z.expr, x.type, !is_type_untyped(x.type));
 					add_constant_switch_case(ctx, &seen, y);
 				}
 			}
@@ -1041,7 +1149,7 @@ void check_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 			}
 			error_line("\n");
 
-			error_line("\tSuggestion: Was '#partial switch' wanted? This replaces the previous '#complete switch'.\n");
+			error_line("\tSuggestion: Was '#partial switch' wanted?\n");
 		}
 	}
 }
@@ -1236,7 +1344,7 @@ void check_type_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 			if (!is_reference) {
 				tag_var->flags |= EntityFlag_Value;
 			}
-			add_entity(ctx->checker, ctx->scope, lhs, tag_var);
+			add_entity(ctx, ctx->scope, lhs, tag_var);
 			add_entity_use(ctx, lhs, tag_var);
 			add_implicit_entity(ctx, stmt, tag_var);
 		}
@@ -1273,7 +1381,7 @@ void check_type_switch_stmt(CheckerContext *ctx, Ast *node, u32 mod_flags) {
 				}
 			}
 			error_line("\n");
-			error_line("\tSuggestion: Was '#partial switch' wanted? This replaces the previous '#complete switch'.\n");
+			error_line("\tSuggestion: Was '#partial switch' wanted?\n");
 		}
 	}
 }
@@ -1291,7 +1399,7 @@ void check_block_stmt_for_errors(CheckerContext *ctx, Ast *body)  {
 			case Ast_IfStmt:
 			case Ast_ForStmt:
 			case Ast_RangeStmt:
-			case Ast_InlineRangeStmt:
+			case Ast_UnrollRangeStmt:
 			case Ast_SwitchStmt:
 			case Ast_TypeSwitchStmt:
 				// TODO(bill): Is this a correct checking system?
@@ -1388,6 +1496,28 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 			gbString expr_str = expr_to_string(operand.expr);
 			error(node, "Expression is not used: '%s'", expr_str);
 			gb_string_free(expr_str);
+			if (operand.expr->kind == Ast_BinaryExpr) {
+				ast_node(be, BinaryExpr, operand.expr);
+				if (be->op.kind != Token_CmpEq) {
+					break;
+				}
+
+				switch (be->left->tav.mode) {
+				case Addressing_Context:
+				case Addressing_Variable:
+				case Addressing_MapIndex:
+				case Addressing_SoaVariable:
+					{
+						gbString lhs = expr_to_string(be->left);
+						gbString rhs = expr_to_string(be->right);
+						error_line("\tSuggestion: Did you mean to do an assignment?\n", lhs, rhs);
+						error_line("\t            '%s = %s;'\n", lhs, rhs);
+						gb_string_free(rhs);
+						gb_string_free(lhs);
+					}
+					break;
+				}
+			}
 
 			break;
 		}
@@ -1442,53 +1572,6 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 			auto lhs_to_ignore = array_make<bool>(temporary_allocator(), lhs_count);
 
 			isize max = gb_min(lhs_count, rhs_count);
-			// NOTE(bill, 2020-05-02): This is an utter hack to get these custom atom operations working
-			// correctly for assignments
-			for (isize i = 0; i < max; i++) {
-				if (lhs_operands[i].mode == Addressing_AtomOpAssign) {
-					Operand lhs = lhs_operands[i];
-
-					Type *t = base_type(lhs.type);
-					GB_ASSERT(t->kind == Type_Struct);
-					ast_node(ie, IndexExpr, unparen_expr(lhs.expr));
-
-					TypeAtomOpTable *atom_op_table = t->Struct.atom_op_table;
-					GB_ASSERT(atom_op_table->op[TypeAtomOp_index_set] != nullptr);
-					Entity *e = atom_op_table->op[TypeAtomOp_index_set];
-
-					GB_ASSERT(e->identifier != nullptr);
-					Ast *proc_ident = clone_ast(e->identifier);
-					GB_ASSERT(ctx->file != nullptr);
-
-
-					TypeAndValue tv = type_and_value_of_expr(ie->expr);
-					Ast *expr = ie->expr;
-					if (is_type_pointer(tv.type)) {
-						// Okay
-					} else if (tv.mode == Addressing_Variable) {
-						// NOTE(bill): Hack it to take the address instead
-						expr = ast_unary_expr(ctx->file, {Token_And, STR_LIT("&")}, ie->expr);
-					} else {
-						continue;
-					}
-
-					auto args = array_make<Ast *>(heap_allocator(), 3);
-					args[0] = expr;
-					args[1] = ie->index;
-					args[2] = rhs_operands[i].expr;
-
-					Ast *fake_call = ast_call_expr(ctx->file, proc_ident, args, ie->open, ie->close, {});
-					Operand fake_operand = {};
-					fake_operand.expr = lhs.expr;
-					check_expr_base(ctx, &fake_operand, fake_call, nullptr);
-					AtomOpMapEntry entry = {TypeAtomOp_index_set, fake_call};
-					map_set(&ctx->info->atom_op_map, hash_pointer(lhs.expr), entry);
-
-					lhs_to_ignore[i] = true;
-
-				}
-			}
-
 			for (isize i = 0; i < max; i++) {
 				if (lhs_to_ignore[i]) {
 					continue;
@@ -1514,8 +1597,8 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 			}
 			Operand lhs = {Addressing_Invalid};
 			Operand rhs = {Addressing_Invalid};
-			Ast binary_expr = {Ast_BinaryExpr};
-			ast_node(be, BinaryExpr, &binary_expr);
+			Ast *binary_expr = alloc_ast_node(node->file, Ast_BinaryExpr);
+			ast_node(be, BinaryExpr, binary_expr);
 			be->op = op;
 			be->op.kind = cast(TokenKind)(cast(i32)be->op.kind - (Token_AddEq - Token_Add));
 			 // NOTE(bill): Only use the first one will be used
@@ -1523,7 +1606,7 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 			be->right = as->rhs[0];
 
 			check_expr(ctx, &lhs, as->lhs[0]);
-			check_binary_expr(ctx, &rhs, &binary_expr, nullptr, true);
+			check_binary_expr(ctx, &rhs, binary_expr, nullptr, true);
 			if (rhs.mode == Addressing_Invalid) {
 				return;
 			}
@@ -1584,7 +1667,7 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 		GB_ASSERT(ctx->curr_proc_sig != nullptr);
 
 		if (ctx->in_defer) {
-			error(rs->token, "You cannot 'return' within a defer statement");
+			error(rs->token, "'return' cannot be used within a defer statement");
 			break;
 		}
 
@@ -1620,7 +1703,11 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 		} else {
 			for (isize i = 0; i < result_count; i++) {
 				Entity *e = pt->results->Tuple.variables[i];
-				check_assignment(ctx, &operands[i], e->type, str_lit("return statement"));
+				Operand *o = &operands[i];
+				check_assignment(ctx, o, e->type, str_lit("return statement"));
+				if (is_type_untyped(o->type)) {
+					update_untyped_expr_type(ctx, o->expr, e->type, true);
+				}
 			}
 		}
 	case_end;
@@ -1751,7 +1838,7 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 						Type *cond_type = t->Tuple.variables[count-1]->type;
 						if (!is_type_boolean(cond_type)) {
 							gbString s = type_to_string(cond_type);
-							error(operand.expr, "The final type of %td-valued tuple must be a boolean, got %s", count, s);
+							error(operand.expr, "The final type of %td-valued expression must be a boolean, got %s", count, s);
 							gb_string_free(s);
 							break;
 						}
@@ -1762,14 +1849,14 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 
 						if (rs->vals.count > 1 && rs->vals[1] != nullptr && count < 3) {
 							gbString s = type_to_string(t);
-							error(operand.expr, "Expected a 3-value tuple on the rhs, got (%s)", s);
+							error(operand.expr, "Expected a 3-valued expression on the rhs, got (%s)", s);
 							gb_string_free(s);
 							break;
 						}
 
 						if (rs->vals.count > 0 && rs->vals[0] != nullptr && count < 2) {
 							gbString s = type_to_string(t);
-							error(operand.expr, "Expected at least a 2-values tuple on the rhs, got (%s)", s);
+							error(operand.expr, "Expected at least a 2-valued expression on the rhs, got (%s)", s);
 							gb_string_free(s);
 							break;
 						}
@@ -1783,9 +1870,6 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 						if (is_ptr) use_by_reference_for_value = true;
 						array_add(&vals, t->Struct.soa_elem);
 						array_add(&vals, t_int);
-						if (!build_context.use_llvm_api) {
-							error(operand.expr, "#soa structures do not yet support for in loop iteration");
-						}
 					}
 					break;
 				}
@@ -1800,7 +1884,8 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 				error(operand.expr, "Cannot iterate over '%s' of type '%s'", s, t);
 
 				if (rs->vals.count == 1) {
-					if (is_type_map(operand.type) || is_type_bit_set(operand.type)) {
+					Type *t = type_deref(operand.type);
+					if (is_type_map(t) || is_type_bit_set(t)) {
 						gbString v = expr_to_string(rs->vals[0]);
 						defer (gb_string_free(v));
 						error_line("\tSuggestion: place parentheses around the expression\n");
@@ -1881,7 +1966,7 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 			Entity *e = entities[i];
 			DeclInfo *d = decl_info_of_entity(e);
 			GB_ASSERT(d == nullptr);
-			add_entity(ctx->checker, ctx->scope, e->identifier, e);
+			add_entity(ctx, ctx->scope, e->identifier, e);
 			d = make_decl_info(ctx->scope, ctx->decl);
 			add_entity_and_decl_info(ctx, e->identifier, e, d);
 		}
@@ -1891,7 +1976,7 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 		check_close_scope(ctx);
 	case_end;
 
-	case_ast_node(irs, InlineRangeStmt, node);
+	case_ast_node(irs, UnrollRangeStmt, node);
 		check_inline_range_stmt(ctx, node, mod_flags);
 	case_end;
 
@@ -2201,7 +2286,7 @@ void check_stmt_internal(CheckerContext *ctx, Ast *node, u32 flags) {
 						}
 					}
 				}
-				add_entity(ctx->checker, ctx->scope, e->identifier, e);
+				add_entity(ctx, ctx->scope, e->identifier, e);
 			}
 
 			if (vd->is_using != 0) {

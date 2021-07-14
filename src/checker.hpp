@@ -9,23 +9,23 @@ struct Checker;
 struct CheckerInfo;
 struct CheckerContext;
 
-enum AddressingMode;
+enum AddressingMode : u8;
 struct TypeAndValue;
 
 // ExprInfo stores information used for "untyped" expressions
 struct ExprInfo {
 	AddressingMode mode;
+	bool is_lhs; // Debug info
 	Type *         type;
 	ExactValue     value;
-	bool is_lhs; // Debug info
 };
 
-gb_inline ExprInfo make_expr_info(AddressingMode mode, Type *type, ExactValue value, bool is_lhs) {
-	ExprInfo ei = {};
-	ei.mode   = mode;
-	ei.type   = type;
-	ei.value  = value;
-	ei.is_lhs = is_lhs;
+gb_inline ExprInfo *make_expr_info(AddressingMode mode, Type *type, ExactValue const &value, bool is_lhs) {
+	ExprInfo *ei = gb_alloc_item(permanent_allocator(), ExprInfo);
+	ei->mode   = mode;
+	ei->type   = type;
+	ei->value  = value;
+	ei->is_lhs = is_lhs;
 	return ei;
 }
 
@@ -59,6 +59,7 @@ struct BuiltinProc {
 	bool     variadic;
 	ExprKind kind;
 	BuiltinProcPkg pkg;
+	bool diverging;
 };
 
 
@@ -105,13 +106,15 @@ struct AttributeContext {
 	bool    has_disabled_proc;
 	bool    disabled_proc;
 	bool    test;
+	bool    set_cold;
 	String  link_name;
 	String  link_prefix;
+	String  link_section;
 	isize   init_expr_list_count;
 	String  thread_local_model;
 	String  deprecated_message;
 	DeferredProcedure deferred_procedure;
-	struct TypeAtomOpTable *atom_op_table;
+	u32 optimization_mode; // ProcedureOptimizationMode
 };
 
 AttributeContext make_attribute_context(String link_prefix) {
@@ -141,6 +144,7 @@ struct DeclInfo {
 	Type *        gen_proc_type; // Precalculated
 	bool          is_using;
 	bool          where_clauses_evaluated;
+	bool          proc_checked;
 
 	CommentGroup *comment;
 	CommentGroup *docs;
@@ -183,12 +187,13 @@ enum { DEFAULT_SCOPE_CAPACITY = 29 };
 struct Scope {
 	Ast *         node;
 	Scope *       parent;
+	// TODO(bill): make this is an ATOMIC singular linked list
 	Scope *       prev;
 	Scope *       next;
 	Scope *       first_child;
 	Scope *       last_child;
-	StringMap<Entity *> elements;
 
+	StringMap<Entity *> elements;
 	Array<Ast *>    delayed_directives;
 	Array<Ast *>    delayed_imports;
 	PtrSet<Scope *> imported;
@@ -255,26 +260,21 @@ struct AtomOpMapEntry {
 
 struct CheckerContext;
 
+struct UntypedExprInfo {
+	Ast *expr;
+	ExprInfo *info;
+};
+
+typedef Map<ExprInfo *> UntypedExprInfoMap; // Key: Ast *
+typedef MPMCQueue<ProcInfo *> ProcBodyQueue;
+
 // CheckerInfo stores all the symbol information for a type-checked program
 struct CheckerInfo {
 	Checker *checker;
 
-	Map<ExprInfo>         untyped; // Key: Ast * | Expression -> ExprInfo
-	                               // NOTE(bill): This needs to be a map and not on the Ast
-	                               // as it needs to be iterated across
 	StringMap<AstFile *>    files;    // Key (full path)
 	StringMap<AstPackage *> packages; // Key (full path)
-	StringMap<Entity *>     foreigns;
-	Array<Entity *>       definitions;
-	Array<Entity *>       entities;
-	Array<DeclInfo *>     variable_init_order;
-
-	Map<Array<Entity *> > gen_procs;       // Key: Ast * | Identifier -> Entity
-	Map<Array<Entity *> > gen_types;       // Key: Type *
-
-	Array<Type *>         type_info_types;
-	Map<isize>            type_info_map;   // Key: Type *
-
+	Array<DeclInfo *>       variable_init_order;
 
 	AstPackage *          builtin_package;
 	AstPackage *          runtime_package;
@@ -284,15 +284,46 @@ struct CheckerInfo {
 	PtrSet<Entity *>      minimum_dependency_set;
 	PtrSet<isize>         minimum_dependency_type_info_set;
 
-	Array<Entity *>       required_foreign_imports_through_force;
-	Array<Entity *>       required_global_variables;
-
-	Map<AtomOpMapEntry>   atom_op_map; // Key: Ast *
+	UntypedExprInfoMap global_untyped; // NOTE(bill): This needs to be a map and not on the Ast
+	                                   // as it needs to be iterated across afterwards
 
 	Array<Entity *> testing_procedures;
 
-	bool allow_identifier_uses;
-	Array<Ast *> identifier_uses; // only used by 'odin query'
+	Array<Entity *> definitions;
+	Array<Entity *> entities;
+
+
+	// Below are accessed within procedures
+	// NOTE(bill): If the semantic checker (check_proc_body) is to ever to be multithreaded,
+	// these variables will be of contention
+
+	gbMutex gen_procs_mutex; // Possibly recursive
+	gbMutex gen_types_mutex; // Possibly recursive
+	BlockingMutex type_info_mutex; // NOT recursive
+	BlockingMutex deps_mutex;      // NOT recursive & Only used in `check_proc_body`
+	BlockingMutex foreign_mutex;   // NOT recursive
+	BlockingMutex scope_mutex;     // NOT recursive & Only used in `create_scope`
+
+	Map<Array<Entity *> > gen_procs;       // Key: Ast * | Identifier -> Entity
+	Map<Array<Entity *> > gen_types;       // Key: Type *
+
+	Array<Type *>         type_info_types;
+	Map<isize>            type_info_map;   // Key: Type *
+
+	StringMap<Entity *> foreigns;
+	Array<Entity *>     required_foreign_imports_through_force;
+
+	// only used by 'odin query'
+	bool          allow_identifier_uses;
+	BlockingMutex identifier_uses_mutex;
+	Array<Ast *>  identifier_uses;
+
+	// NOTE(bill): These are actually MPSC queues
+	// TODO(bill): Convert them to be MPSC queues
+	MPMCQueue<Entity *> definition_queue;
+	MPMCQueue<Entity *> entity_queue;
+	MPMCQueue<Entity *> required_global_variable_queue;
+
 };
 
 struct CheckerContext {
@@ -319,6 +350,8 @@ struct CheckerContext {
 	CheckerPolyPath *poly_path;
 	isize            poly_level; // TODO(bill): Actually handle correctly
 
+	UntypedExprInfoMap *untyped;
+
 #define MAX_INLINE_FOR_DEPTH 1024ll
 	i64 inline_for_depth;
 
@@ -332,18 +365,24 @@ struct CheckerContext {
 	Scope *    polymorphic_scope;
 
 	Ast *assignment_lhs_hint;
-	Ast *unary_address_hint;
+
+	ProcBodyQueue *procs_to_check_queue;
 };
+
 
 struct Checker {
 	Parser *    parser;
 	CheckerInfo info;
 
-	Array<ProcInfo> procs_to_check;
-	Array<Entity *> procs_with_deferred_to_check;
+	CheckerContext builtin_ctx;
 
-	CheckerContext *curr_ctx;
-	CheckerContext init_ctx;
+	MPMCQueue<Entity *> procs_with_deferred_to_check;
+
+	ProcBodyQueue procs_to_check_queue;
+	gbSemaphore procs_to_check_semaphore;
+
+	// TODO(bill): Technically MPSC queue
+	MPMCQueue<UntypedExprInfo> global_untyped_queue;
 };
 
 
@@ -381,11 +420,9 @@ void    scope_lookup_parent (Scope *s, String const &name, Scope **scope_, Entit
 Entity *scope_insert (Scope *s, Entity *entity);
 
 
-ExprInfo *check_get_expr_info     (CheckerInfo *i, Ast *expr);
-void      check_set_expr_info     (CheckerInfo *i, Ast *expr, ExprInfo info);
-void      check_remove_expr_info  (CheckerInfo *i, Ast *expr);
-void      add_untyped             (CheckerInfo *i, Ast *expression, bool lhs, AddressingMode mode, Type *basic_type, ExactValue value);
 void      add_type_and_value      (CheckerInfo *i, Ast *expression, AddressingMode mode, Type *type, ExactValue value);
+ExprInfo *check_get_expr_info     (CheckerContext *c, Ast *expr);
+void      add_untyped             (CheckerContext *c, Ast *expression, AddressingMode mode, Type *basic_type, ExactValue value);
 void      add_entity_use          (CheckerContext *c, Ast *identifier, Entity *entity);
 void      add_implicit_entity     (CheckerContext *c, Ast *node, Entity *e);
 void      add_entity_and_decl_info(CheckerContext *c, Ast *identifier, Entity *e, DeclInfo *d, bool is_exported=true);
@@ -394,6 +431,10 @@ void      add_type_info_type      (CheckerContext *c, Type *t);
 void check_add_import_decl(CheckerContext *c, Ast *decl);
 void check_add_foreign_import_decl(CheckerContext *c, Ast *decl);
 
+
+void check_entity_decl(CheckerContext *c, Entity *e, DeclInfo *d, Type *named_type);
+void check_const_decl(CheckerContext *c, Entity *e, Ast *type_expr, Ast *init_expr, Type *named_type);
+void check_type_decl(CheckerContext *c, Entity *e, Ast *type_expr, Type *def);
 
 bool check_arity_match(CheckerContext *c, AstValueDecl *vd, bool is_global = false);
 void check_collect_entities(CheckerContext *c, Slice<Ast *> const &nodes);
@@ -413,3 +454,6 @@ void  check_poly_path_push(CheckerContext *c, Type *t);
 Type *check_poly_path_pop (CheckerContext *c);
 
 void init_core_context(Checker *c);
+void init_mem_allocator(Checker *c);
+
+void add_untyped_expressions(CheckerInfo *cinfo, UntypedExprInfoMap *untyped);

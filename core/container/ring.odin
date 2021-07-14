@@ -1,7 +1,7 @@
 package container
 
 
-Ring :: struct(T: typeid) {
+Ring :: struct($T: typeid) {
 	next, prev: ^Ring(T),
 	value: T,
 }
@@ -26,6 +26,7 @@ ring_prev :: proc(r: ^$R/Ring) -> ^R {
 
 
 ring_move :: proc(r: ^$R/Ring, n: int) -> ^R {
+  r := r;
 	if r.next == nil {
 		return ring_init(r);
 	}
@@ -64,7 +65,7 @@ ring_len :: proc(r: ^$R/Ring) -> int {
 	n := 0;
 	if r != nil {
 		n = 1;
-		for p := ring_next(&p); p != r; p = p.next {
+		for p := ring_next(r); p != r; p = p.next {
 			n += 1;
 		}
 	}

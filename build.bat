@@ -1,5 +1,14 @@
 @echo off
 
+setlocal EnableDelayedExpansion
+
+for /f "usebackq tokens=1,2 delims=,=- " %%i in (`wmic os get LocalDateTime /value`) do @if %%i==LocalDateTime (
+     set CURR_DATE_TIME=%%j
+)
+
+set curr_year=%CURR_DATE_TIME:~0,4%
+set curr_month=%CURR_DATE_TIME:~4,2%
+
 :: Make sure this is a decent name and not generic
 set exe_name=odin.exe
 
@@ -19,8 +28,10 @@ if "%2" == "1" (
     set nightly=0
 )
 
+set odin_version_raw="dev-%curr_year%-%curr_month%"
+
 set compiler_flags= -nologo -Oi -TP -fp:precise -Gm- -MP -FC -EHsc- -GR- -GF
-set compiler_defines= -DLLVM_BACKEND_SUPPORT -DUSE_NEW_LLVM_ABI_SYSTEM
+set compiler_defines= -DODIN_VERSION_RAW=\"%odin_version_raw%\"
 
 for /f %%i in ('git rev-parse --short HEAD') do set GIT_SHA=%%i
 if %ERRORLEVEL% equ 0 set compiler_defines=%compiler_defines% -DGIT_SHA=\"%GIT_SHA%\"
@@ -35,7 +46,7 @@ if %release_mode% EQU 0 ( rem Debug
 
 set compiler_warnings= ^
 	-W4 -WX ^
-	-wd4100 -wd4101 -wd4127 -wd4189 ^
+	-wd4100 -wd4101 -wd4127 -wd4146 -wd4189 ^
 	-wd4201 -wd4204 ^
 	-wd4456 -wd4457 -wd4480 ^
 	-wd4512
@@ -59,7 +70,7 @@ set linker_settings=%libs% %linker_flags%
 del *.pdb > NUL 2> NUL
 del *.ilk > NUL 2> NUL
 
-cl %compiler_settings% "src\main.cpp" /link %linker_settings% -OUT:%exe_name%
+cl %compiler_settings% "src\main.cpp" "src\libtommath.cpp" /link %linker_settings% -OUT:%exe_name%
 
 if %errorlevel% neq 0 goto end_of_build
 if %release_mode% EQU 0 odin run examples/demo/demo.odin

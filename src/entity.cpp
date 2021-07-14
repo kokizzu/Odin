@@ -32,43 +32,47 @@ String const entity_strings[] = {
 #undef ENTITY_KIND
 };
 
-enum EntityFlag : u32 {
-	EntityFlag_Visited       = 1<<0,
-	EntityFlag_Used          = 1<<1,
-	EntityFlag_Using         = 1<<2,
-	EntityFlag_Field         = 1<<3,
-	EntityFlag_Param         = 1<<4,
-	EntityFlag_Result        = 1<<5,
-	EntityFlag_ArrayElem     = 1<<6,
-	EntityFlag_Ellipsis      = 1<<7,
-	EntityFlag_NoAlias       = 1<<8,
-	EntityFlag_TypeField     = 1<<9,
-	EntityFlag_Value         = 1<<10,
-	EntityFlag_Sret          = 1<<11,
-	EntityFlag_ByVal         = 1<<12,
-	EntityFlag_BitFieldValue = 1<<13,
-	EntityFlag_PolyConst     = 1<<14,
-	EntityFlag_NotExported   = 1<<15,
-	EntityFlag_ConstInput    = 1<<16,
+enum EntityFlag : u64 {
+	EntityFlag_Visited       = 1ull<<0,
+	EntityFlag_Used          = 1ull<<1,
+	EntityFlag_Using         = 1ull<<2,
+	EntityFlag_Field         = 1ull<<3,
+	EntityFlag_Param         = 1ull<<4,
+	EntityFlag_Result        = 1ull<<5,
+	EntityFlag_ArrayElem     = 1ull<<6,
+	EntityFlag_ArraySwizzle  = 1ull<<7,
+	EntityFlag_Ellipsis      = 1ull<<8,
+	EntityFlag_NoAlias       = 1ull<<9,
+	EntityFlag_TypeField     = 1ull<<10,
+	EntityFlag_Value         = 1ull<<11,
+	EntityFlag_Sret          = 1ull<<12,
+	EntityFlag_ByVal         = 1ull<<13,
+	EntityFlag_BitFieldValue = 1ull<<14,
+	EntityFlag_PolyConst     = 1ull<<15,
+	EntityFlag_NotExported   = 1ull<<16,
+	EntityFlag_ConstInput    = 1ull<<17,
 
-	EntityFlag_Static        = 1<<17,
+	EntityFlag_Static        = 1ull<<18,
 
-	EntityFlag_ImplicitReference = 1<<18, // NOTE(bill): equivalent to `const &` in C++
+	EntityFlag_ImplicitReference = 1ull<<19, // NOTE(bill): equivalent to `const &` in C++
 
-	EntityFlag_SoaPtrField   = 1<<19, // to allow s.x[0] where `s.x` is a pointer rather than a slice
+	EntityFlag_SoaPtrField   = 1ull<<20, // to allow s.x[0] where `s.x` is a pointer rather than a slice
 
-	EntityFlag_ProcBodyChecked = 1<<20,
+	EntityFlag_ProcBodyChecked = 1ull<<21,
 
-	EntityFlag_CVarArg       = 1<<21,
-	EntityFlag_AutoCast      = 1<<22,
+	EntityFlag_CVarArg       = 1ull<<22,
+	EntityFlag_AutoCast      = 1ull<<23,
 
-	EntityFlag_Disabled      = 1<<24,
+	EntityFlag_Disabled      = 1ull<<24,
+	EntityFlag_Cold          = 1ull<<25, // procedure is rarely called
 
-	EntityFlag_Test          = 1<<25,
+	EntityFlag_Test          = 1ull<<30,
+
+	EntityFlag_Overridden    = 1ull<<63,
 
 };
 
-enum EntityState {
+enum EntityState : u32 {
 	EntityState_Unresolved = 0,
 	EntityState_InProgress = 1,
 	EntityState_Resolved   = 2,
@@ -92,13 +96,23 @@ struct ParameterValue {
 	};
 };
 
+enum EntityConstantFlags : u32 {
+	EntityConstantFlag_ImplicitEnumValue = 1<<0,
+};
 
+enum ProcedureOptimizationMode : u32 {
+	ProcedureOptimizationMode_Default,
+	ProcedureOptimizationMode_None,
+	ProcedureOptimizationMode_Minimal,
+	ProcedureOptimizationMode_Size,
+	ProcedureOptimizationMode_Speed,
+};
 
 // An Entity is a named "thing" in the language
 struct Entity {
 	EntityKind  kind;
 	u64         id;
-	u32         flags;
+	u64         flags;
 	EntityState state;
 	Token       token;
 	Scope *     scope;
@@ -113,6 +127,8 @@ struct Entity {
 	Entity *    using_parent;
 	Ast *       using_expr;
 
+	Entity *    aliased_of;
+
 	lbModule *   code_gen_module;
 	lbProcedure *code_gen_procedure;
 
@@ -123,8 +139,12 @@ struct Entity {
 	// later entity kinds
 	union {
 		struct {
+			u8 start;
+		} Dummy;
+		struct {
 			ExactValue value;
 			ParameterValue param_value;
+			u32 flags;
 		} Constant;
 		struct {
 			Ast *init_expr; // only used for some variables within procedure bodies
@@ -139,6 +159,7 @@ struct Entity {
 			Ast *      foreign_library_ident;
 			String     link_name;
 			String     link_prefix;
+			String     link_section;
 			bool       is_foreign;
 			bool       is_export;
 		} Variable;
@@ -156,6 +177,7 @@ struct Entity {
 			DeferredProcedure deferred_procedure;
 			bool    is_foreign;
 			bool    is_export;
+			ProcedureOptimizationMode optimization_mode;
 		} Procedure;
 		struct {
 			Array<Entity *> entities;

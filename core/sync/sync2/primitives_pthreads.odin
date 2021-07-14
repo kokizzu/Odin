@@ -1,11 +1,11 @@
-//+build linux, darwin, freebsd
+//+build linux, freebsd
 //+private
 package sync2
 
-when #config(ODIN_SYNC_USE_PTHREADS, false) {
+when #config(ODIN_SYNC_USE_PTHREADS, true) {
 
-import "intrinsics"
 import "core:time"
+import "core:runtime"
 import "core:sys/unix"
 
 _Mutex_State :: enum i32 {
@@ -53,25 +53,25 @@ _RW_Mutex :: struct {
 }
 
 _rw_mutex_lock :: proc(rw: ^RW_Mutex) {
-	_ = intrinsics.atomic_add(&rw.impl.state, RW_Mutex_State_Writer);
+	_ = atomic_add(&rw.impl.state, RW_Mutex_State_Writer);
 	mutex_lock(&rw.impl.mutex);
 
-	state := intrinsics.atomic_or(&rw.impl.state, RW_Mutex_State_Writer);
+	state := atomic_or(&rw.impl.state, RW_Mutex_State_Writer);
 	if state & RW_Mutex_State_Reader_Mask != 0 {
 		sema_wait(&rw.impl.sema);
 	}
 }
 
 _rw_mutex_unlock :: proc(rw: ^RW_Mutex) {
-	_ = intrinsics.atomic_and(&rw.impl.state, ~RW_Mutex_State_Is_Writing);
+	_ = atomic_and(&rw.impl.state, ~RW_Mutex_State_Is_Writing);
 	mutex_unlock(&rw.impl.mutex);
 }
 
 _rw_mutex_try_lock :: proc(rw: ^RW_Mutex) -> bool {
 	if mutex_try_lock(&rw.impl.mutex) {
-		state := intrinsics.atomic_load(&rw.impl.state);
+		state := atomic_load(&rw.impl.state);
 		if state & RW_Mutex_State_Reader_Mask == 0 {
-			_ = intrinsics.atomic_or(&rw.impl.state, RW_Mutex_State_Is_Writing);
+			_ = atomic_or(&rw.impl.state, RW_Mutex_State_Is_Writing);
 			return true;
 		}
 
@@ -81,22 +81,22 @@ _rw_mutex_try_lock :: proc(rw: ^RW_Mutex) -> bool {
 }
 
 _rw_mutex_shared_lock :: proc(rw: ^RW_Mutex) {
-	state := intrinsics.atomic_load(&rw.impl.state);
+	state := atomic_load(&rw.impl.state);
 	for state & (RW_Mutex_State_Is_Writing|RW_Mutex_State_Writer_Mask) == 0 {
 		ok: bool;
-		state, ok = intrinsics.atomic_cxchgweak(&rw.impl.state, state, state + RW_Mutex_State_Reader);
+		state, ok = atomic_compare_exchange_weak(&rw.impl.state, state, state + RW_Mutex_State_Reader);
 		if ok {
 			return;
 		}
 	}
 
 	mutex_lock(&rw.impl.mutex);
-	_ = intrinsics.atomic_add(&rw.impl.state, RW_Mutex_State_Reader);
+	_ = atomic_add(&rw.impl.state, RW_Mutex_State_Reader);
 	mutex_unlock(&rw.impl.mutex);
 }
 
 _rw_mutex_shared_unlock :: proc(rw: ^RW_Mutex) {
-	state := intrinsics.atomic_sub(&rw.impl.state, RW_Mutex_State_Reader);
+	state := atomic_sub(&rw.impl.state, RW_Mutex_State_Reader);
 
 	if (state & RW_Mutex_State_Reader_Mask == RW_Mutex_State_Reader) &&
 	   (state & RW_Mutex_State_Is_Writing != 0) {
@@ -105,21 +105,68 @@ _rw_mutex_shared_unlock :: proc(rw: ^RW_Mutex) {
 }
 
 _rw_mutex_try_shared_lock :: proc(rw: ^RW_Mutex) -> bool {
-	state := intrinsics.atomic_load(&rw.impl.state);
+	state := atomic_load(&rw.impl.state);
 	if state & (RW_Mutex_State_Is_Writing|RW_Mutex_State_Writer_Mask) == 0 {
-		_, ok := intrinsics.atomic_cxchg(&rw.impl.state, state, state + RW_Mutex_State_Reader);
+		_, ok := atomic_compare_exchange_strong(&rw.impl.state, state, state + RW_Mutex_State_Reader);
 		if ok {
 			return true;
 		}
 	}
 	if mutex_try_lock(&rw.impl.mutex) {
-		_ = intrinsics.atomic_add(&rw.impl.state, RW_Mutex_State_Reader);
+		_ = atomic_add(&rw.impl.state, RW_Mutex_State_Reader);
 		mutex_unlock(&rw.impl.mutex);
 		return true;
 	}
 
 	return false;
 }
+
+
+_Recursive_Mutex :: struct {
+	owner:     int,
+	recursion: int,
+	mutex: Mutex,
+}
+
+_recursive_mutex_lock :: proc(m: ^Recursive_Mutex) {
+	tid := runtime.current_thread_id();
+	if tid != m.impl.owner {
+		mutex_lock(&m.impl.mutex);
+	}
+	// inside the lock
+	m.impl.owner = tid;
+	m.impl.recursion += 1;
+}
+
+_recursive_mutex_unlock :: proc(m: ^Recursive_Mutex) {
+	tid := runtime.current_thread_id();
+	assert(tid == m.impl.owner);
+	m.impl.recursion -= 1;
+	recursion := m.impl.recursion;
+	if recursion == 0 {
+		m.impl.owner = 0;
+	}
+	if recursion == 0 {
+		mutex_unlock(&m.impl.mutex);
+	}
+	// outside the lock
+
+}
+
+_recursive_mutex_try_lock :: proc(m: ^Recursive_Mutex) -> bool {
+	tid := runtime.current_thread_id();
+	if m.impl.owner == tid {
+		return mutex_try_lock(&m.impl.mutex);
+	}
+	if !mutex_try_lock(&m.impl.mutex) {
+		return false;
+	}
+	// inside the lock
+	m.impl.owner = tid;
+	m.impl.recursion += 1;
+	return true;
+}
+
 
 _Cond :: struct {
 	pthread_cond: unix.pthread_cond_t,
@@ -150,6 +197,35 @@ _cond_broadcast :: proc(c: ^Cond) {
 	err := unix.pthread_cond_broadcast(&c.impl.pthread_cond);
 	assert(err == 0);
 }
+
+_Sema :: struct {
+	mutex: Mutex,
+	cond:  Cond,
+	count: int,
+}
+
+_sema_wait :: proc(s: ^Sema) {
+	mutex_lock(&s.impl.mutex);
+	defer mutex_unlock(&s.impl.mutex);
+
+	for s.impl.count == 0 {
+		cond_wait(&s.impl.cond, &s.impl.mutex);
+	}
+
+	s.impl.count -= 1;
+	if s.impl.count > 0 {
+		cond_signal(&s.impl.cond);
+	}
+}
+
+_sema_post :: proc(s: ^Sema, count := 1) {
+	mutex_lock(&s.impl.mutex);
+	defer mutex_unlock(&s.impl.mutex);
+
+	s.impl.count += count;
+	cond_signal(&s.impl.cond);
+}
+
 
 
 } // ODIN_SYNC_USE_PTHREADS

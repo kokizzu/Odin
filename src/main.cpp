@@ -7,15 +7,22 @@
 #include "exact_value.cpp"
 #include "build_settings.cpp"
 
+void debugf(char const *fmt, ...) {
+	if (build_context.show_debug_messages) {
+		gb_printf_err("[DEBUG] ");
+		va_list va;
+		va_start(va, fmt);
+		(void)gb_printf_err_va(fmt, va);
+		va_end(va);
+	}
+}
 
 gb_global Timings global_timings = {0};
 
-#if defined(LLVM_BACKEND_SUPPORT)
 #if defined(GB_SYSTEM_WINDOWS)
 #include "llvm-c/Types.h"
 #else
 #include <llvm-c/Types.h>
-#endif
 #endif
 
 #include "parser.hpp"
@@ -26,7 +33,6 @@ gb_global Timings global_timings = {0};
 #include "docs.cpp"
 
 
-#if defined(LLVM_BACKEND_SUPPORT)
 #include "llvm_backend.cpp"
 
 #if defined(GB_SYSTEM_OSX)
@@ -36,11 +42,6 @@ gb_global Timings global_timings = {0};
 	#endif
 #endif
 
-#endif
-
-#include "ir.cpp"
-#include "ir_opt.cpp"
-#include "ir_print.cpp"
 #include "query_data.cpp"
 
 
@@ -154,14 +155,13 @@ i32 system_exec_command_line_app(char const *name, char const *fmt, ...) {
 
 
 
-#if defined(LLVM_BACKEND_SUPPORT)
 i32 linker_stage(lbGenerator *gen) {
   i32 result = 0;
   Timings *timings = &global_timings;
 
 	String output_base = gen->output_base;
 
-	if (build_context.metrics.os == TargetOs_js) {
+	if (is_arch_wasm()) {
 		timings_start_section(timings, str_lit("wasm-ld"));
 		system_exec_command_line_app("wasm-ld",
 			"\"%.*s\\bin\\wasm-ld\" \"%.*s.wasm-obj\" -o \"%.*s.wasm\" %.*s %.*s",
@@ -187,7 +187,11 @@ i32 linker_stage(lbGenerator *gen) {
 		build_context.keep_object_files = true;
 	} else {
 	#if defined(GB_SYSTEM_WINDOWS)
-		timings_start_section(timings, str_lit("msvc-link"));
+		String section_name = str_lit("msvc-link");
+		if (build_context.use_lld) {
+			section_name = str_lit("lld-link");
+		}
+		timings_start_section(timings, section_name);
 
 		gbString lib_str = gb_string_make(heap_allocator(), "");
 		defer (gb_string_free(lib_str));
@@ -227,8 +231,19 @@ i32 linker_stage(lbGenerator *gen) {
 			add_path(find_result.vs_library_path);
 		}
 
-		for_array(i, gen->module.foreign_library_paths) {
-			String lib = gen->module.foreign_library_paths[i];
+		for_array(j, gen->modules.entries) {
+			lbModule *m = gen->modules.entries[j].value;
+			for_array(i, m->foreign_library_paths) {
+				String lib = m->foreign_library_paths[i];
+				GB_ASSERT(lib.len < gb_count_of(lib_str_buf)-1);
+				isize len = gb_snprintf(lib_str_buf, gb_size_of(lib_str_buf),
+				                        " \"%.*s\"", LIT(lib));
+				lib_str = gb_string_appendc(lib_str, lib_str_buf);
+			}
+		}
+
+		for_array(i, gen->default_module.foreign_library_paths) {
+			String lib = gen->default_module.foreign_library_paths[i];
 			GB_ASSERT(lib.len < gb_count_of(lib_str_buf)-1);
 			isize len = gb_snprintf(lib_str_buf, gb_size_of(lib_str_buf),
 			                        " \"%.*s\"", LIT(lib));
@@ -274,22 +289,22 @@ i32 linker_stage(lbGenerator *gen) {
 					LIT(build_context.resource_filepath)
 				);
 
-        if(result == 0) {
-          result = system_exec_command_line_app("msvc-link",
-            "\"%.*slink.exe\" %s \"%.*s.res\" -OUT:\"%.*s.%s\" %s "
-            "/nologo /incremental:no /opt:ref /subsystem:%s "
-            " %.*s "
-            " %.*s "
-            " %s "
-            "",
-            LIT(find_result.vs_exe_path), object_files, LIT(output_base), LIT(output_base), output_ext,
-            link_settings,
-            subsystem_str,
-            LIT(build_context.link_flags),
-            LIT(build_context.extra_linker_flags),
-            lib_str
-          );
-        }
+				if (result == 0) {
+					result = system_exec_command_line_app("msvc-link",
+						"\"%.*slink.exe\" %s \"%.*s.res\" -OUT:\"%.*s.%s\" %s "
+						"/nologo /incremental:no /opt:ref /subsystem:%s "
+						" %.*s "
+						" %.*s "
+						" %s "
+						"",
+						LIT(find_result.vs_exe_path), object_files, LIT(output_base), LIT(output_base), output_ext,
+						link_settings,
+						subsystem_str,
+						LIT(build_context.link_flags),
+						LIT(build_context.extra_linker_flags),
+						lib_str
+					  );
+				}
 			} else {
 				result = system_exec_command_line_app("msvc-link",
 					"\"%.*slink.exe\" %s -OUT:\"%.*s.%s\" %s "
@@ -307,15 +322,14 @@ i32 linker_stage(lbGenerator *gen) {
 				);
 			}
 		} else { // lld
-			  result = system_exec_command_line_app("msvc-link",
+			  result = system_exec_command_line_app("msvc-lld-link",
 				"\"%.*s\\bin\\lld-link\" %s -OUT:\"%.*s.%s\" %s "
 				"/nologo /incremental:no /opt:ref /subsystem:%s "
 				" %.*s "
 				" %.*s "
 				" %s "
 				"",
-				LIT(build_context.ODIN_ROOT),
-				LIT(output_base), object_files, output_ext,
+				LIT(build_context.ODIN_ROOT), object_files, LIT(output_base),output_ext,
 				link_settings,
 				subsystem_str,
 				LIT(build_context.link_flags),
@@ -336,8 +350,8 @@ i32 linker_stage(lbGenerator *gen) {
 		gbString lib_str = gb_string_make(heap_allocator(), "-L/");
 		defer (gb_string_free(lib_str));
 
-		for_array(i, gen->module.foreign_library_paths) {
-			String lib = gen->module.foreign_library_paths[i];
+		for_array(i, gen->default_module.foreign_library_paths) {
+			String lib = gen->default_module.foreign_library_paths[i];
 
 			// NOTE(zangent): Sometimes, you have to use -framework on MacOS.
 			//   This allows you to specify '-f' in a #foreign_system_library,
@@ -418,6 +432,11 @@ i32 linker_stage(lbGenerator *gen) {
 			#endif
 		}
 
+		if (build_context.metrics.os == TargetOs_linux) {
+			link_settings = gb_string_appendc(link_settings, "-no-pie ");
+		}
+
+
 		if (build_context.out_filepath.len > 0) {
 			//NOTE(thebirk): We have a custom -out arguments, so we should use the extension from that
 			isize pos = string_extension_position(build_context.out_filepath);
@@ -470,7 +489,6 @@ i32 linker_stage(lbGenerator *gen) {
 
 	return result;
 }
-#endif
 
 Array<String> setup_args(int argc, char const **argv) {
 	gbAllocator a = heap_allocator();
@@ -571,6 +589,7 @@ enum BuildFlagKind {
 
 	BuildFlag_OutFile,
 	BuildFlag_OptimizationLevel,
+	BuildFlag_OptimizationMode,
 	BuildFlag_ShowTimings,
 	BuildFlag_ShowUnused,
 	BuildFlag_ShowUnusedWithLocation,
@@ -589,12 +608,17 @@ enum BuildFlagKind {
 	BuildFlag_NoCRT,
 	BuildFlag_NoEntryPoint,
 	BuildFlag_UseLLD,
+	BuildFlag_UseSeparateModules,
+	BuildFlag_ThreadedChecker,
+	BuildFlag_ShowDebugMessages,
 	BuildFlag_Vet,
 	BuildFlag_VetExtra,
 	BuildFlag_UseLLVMApi,
 	BuildFlag_IgnoreUnknownAttributes,
 	BuildFlag_ExtraLinkerFlags,
 	BuildFlag_Microarch,
+
+	BuildFlag_TestName,
 
 	BuildFlag_DisallowDo,
 	BuildFlag_DefaultToNilAllocator,
@@ -607,9 +631,11 @@ enum BuildFlagKind {
 
 	BuildFlag_Short,
 	BuildFlag_AllPackages,
+	BuildFlag_DocFormat,
 
 	BuildFlag_IgnoreWarnings,
 	BuildFlag_WarningsAsErrors,
+	BuildFlag_VerboseErrors,
 
 #if defined(GB_SYSTEM_WINDOWS)
 	BuildFlag_IgnoreVsSearch,
@@ -686,6 +712,8 @@ bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_Help,              str_lit("help"),                BuildFlagParam_None, Command_all);
 	add_flag(&build_flags, BuildFlag_OutFile,           str_lit("out"),                 BuildFlagParam_String, Command__does_build &~ Command_test);
 	add_flag(&build_flags, BuildFlag_OptimizationLevel, str_lit("opt"),                 BuildFlagParam_Integer, Command__does_build);
+	add_flag(&build_flags, BuildFlag_OptimizationMode,  str_lit("o"),                   BuildFlagParam_String, Command__does_build);
+	add_flag(&build_flags, BuildFlag_OptimizationMode,  str_lit("O"),                   BuildFlagParam_String, Command__does_build);
 	add_flag(&build_flags, BuildFlag_ShowTimings,       str_lit("show-timings"),        BuildFlagParam_None, Command__does_check);
 	add_flag(&build_flags, BuildFlag_ShowMoreTimings,   str_lit("show-more-timings"),   BuildFlagParam_None, Command__does_check);
 	add_flag(&build_flags, BuildFlag_ShowUnused,        str_lit("show-unused"),         BuildFlagParam_None, Command_check);
@@ -704,12 +732,17 @@ bool parse_build_flags(Array<String> args) {
 	add_flag(&build_flags, BuildFlag_NoCRT,             str_lit("no-crt"),              BuildFlagParam_None, Command__does_build);
 	add_flag(&build_flags, BuildFlag_NoEntryPoint,      str_lit("no-entry-point"),      BuildFlagParam_None, Command__does_check &~ Command_test);
 	add_flag(&build_flags, BuildFlag_UseLLD,            str_lit("lld"),                 BuildFlagParam_None, Command__does_build);
+	add_flag(&build_flags, BuildFlag_UseSeparateModules,str_lit("use-separate-modules"),BuildFlagParam_None, Command__does_build);
+	add_flag(&build_flags, BuildFlag_ThreadedChecker,   str_lit("threaded-checker"),    BuildFlagParam_None, Command__does_check);
+	add_flag(&build_flags, BuildFlag_ShowDebugMessages, str_lit("show-debug-messages"), BuildFlagParam_None, Command_all);
 	add_flag(&build_flags, BuildFlag_Vet,               str_lit("vet"),                 BuildFlagParam_None, Command__does_check);
 	add_flag(&build_flags, BuildFlag_VetExtra,          str_lit("vet-extra"),           BuildFlagParam_None, Command__does_check);
 	add_flag(&build_flags, BuildFlag_UseLLVMApi,        str_lit("llvm-api"),            BuildFlagParam_None, Command__does_build);
 	add_flag(&build_flags, BuildFlag_IgnoreUnknownAttributes, str_lit("ignore-unknown-attributes"), BuildFlagParam_None, Command__does_check);
 	add_flag(&build_flags, BuildFlag_ExtraLinkerFlags,  str_lit("extra-linker-flags"),              BuildFlagParam_String, Command__does_build);
 	add_flag(&build_flags, BuildFlag_Microarch,         str_lit("microarch"),                       BuildFlagParam_String, Command__does_build);
+
+	add_flag(&build_flags, BuildFlag_TestName,         str_lit("test-name"),                       BuildFlagParam_String, Command_test);
 
 	add_flag(&build_flags, BuildFlag_DisallowDo,            str_lit("disallow-do"),              BuildFlagParam_None, Command__does_check);
 	add_flag(&build_flags, BuildFlag_DefaultToNilAllocator, str_lit("default-to-nil-allocator"), BuildFlagParam_None, Command__does_check);
@@ -721,9 +754,11 @@ bool parse_build_flags(Array<String> args) {
 
 	add_flag(&build_flags, BuildFlag_Short,         str_lit("short"),        BuildFlagParam_None, Command_doc);
 	add_flag(&build_flags, BuildFlag_AllPackages,   str_lit("all-packages"), BuildFlagParam_None, Command_doc);
+	add_flag(&build_flags, BuildFlag_DocFormat,     str_lit("doc-format"),   BuildFlagParam_None, Command_doc);
 
 	add_flag(&build_flags, BuildFlag_IgnoreWarnings,   str_lit("ignore-warnings"),    BuildFlagParam_None, Command_all);
 	add_flag(&build_flags, BuildFlag_WarningsAsErrors, str_lit("warnings-as-errors"), BuildFlagParam_None, Command_all);
+	add_flag(&build_flags, BuildFlag_VerboseErrors,    str_lit("verbose-errors"),     BuildFlagParam_None, Command_all);
 
 #if defined(GB_SYSTEM_WINDOWS)
 	add_flag(&build_flags, BuildFlag_IgnoreVsSearch, str_lit("ignore-vs-search"),  BuildFlagParam_None, Command__does_build);
@@ -883,7 +918,35 @@ bool parse_build_flags(Array<String> args) {
 						}
 						case BuildFlag_OptimizationLevel:
 							GB_ASSERT(value.kind == ExactValue_Integer);
+							if (set_flags[BuildFlag_OptimizationMode]) {
+								gb_printf_err("Mixture of -opt and -o is not allowed\n");
+								bad_flags = true;
+								break;
+							}
 							build_context.optimization_level = cast(i32)big_int_to_i64(&value.value_integer);
+							break;
+						case BuildFlag_OptimizationMode:
+							GB_ASSERT(value.kind == ExactValue_String);
+							if (set_flags[BuildFlag_OptimizationLevel]) {
+								gb_printf_err("Mixture of -opt and -o is not allowed\n");
+								bad_flags = true;
+								break;
+							}
+
+							if (value.value_string == "minimal") {
+								build_context.optimization_level = 0;
+							} else if (value.value_string == "size") {
+								build_context.optimization_level = 1;
+							} else if (value.value_string == "speed") {
+								build_context.optimization_level = 2;
+							} else {
+								gb_printf_err("Invalid optimization mode for -o:<string>, got %.*s\n", LIT(value.value_string));
+								gb_printf_err("Valid optimization modes:\n");
+								gb_printf_err("\tminimal\n");
+								gb_printf_err("\tsize\n");
+								gb_printf_err("\tspeed\n");
+								bad_flags = true;
+							}
 							break;
 						case BuildFlag_ShowTimings:
 							GB_ASSERT(value.kind == ExactValue_Invalid);
@@ -1056,24 +1119,24 @@ bool parse_build_flags(Array<String> args) {
 							}
 
 							if (!found) {
-								struct DistanceAndTarget {
+								struct DistanceAndTargetIndex {
 									isize distance;
 									isize target_index;
 								};
-								DistanceAndTarget distances[gb_count_of(named_targets)] = {};
+
+								DistanceAndTargetIndex distances[gb_count_of(named_targets)] = {};
 								for (isize i = 0; i < gb_count_of(named_targets); i++) {
 									distances[i].target_index = i;
 									distances[i].distance = levenstein_distance_case_insensitive(str, named_targets[i].name);
 								}
-								gb_sort_array(distances, gb_count_of(distances), gb_isize_cmp(gb_offset_of(DistanceAndTarget, distance)));
+								gb_sort_array(distances, gb_count_of(distances), gb_isize_cmp(gb_offset_of(DistanceAndTargetIndex, distance)));
 
 								gb_printf_err("Unknown target '%.*s'\n", LIT(str));
 
-								enum {MAX_SMALLEST_DISTANCE = 3};
-								if (distances[0].distance <= MAX_SMALLEST_DISTANCE) {
+								if (distances[0].distance <= MAX_SMALLEST_DID_YOU_MEAN_DISTANCE) {
 									gb_printf_err("Did you mean:\n");
 									for (isize i = 0; i < gb_count_of(named_targets); i++) {
-										if (distances[i].distance > MAX_SMALLEST_DISTANCE) {
+										if (distances[i].distance > MAX_SMALLEST_DID_YOU_MEAN_DISTANCE) {
 											break;
 										}
 										gb_printf_err("\t%.*s\n", LIT(named_targets[distances[i].target_index].name));
@@ -1107,8 +1170,16 @@ bool parse_build_flags(Array<String> args) {
 								build_context.build_mode = BuildMode_Executable;
 							} else if (str == "asm" || str == "assembly" || str == "assembler") {
 								build_context.build_mode = BuildMode_Assembly;
+							} else if (str == "llvm" || str == "llvm-ir") {
+								build_context.build_mode = BuildMode_LLVM_IR;
 							} else {
 								gb_printf_err("Unknown build mode '%.*s'\n", LIT(str));
+								gb_printf_err("Valid build modes:\n");
+								gb_printf_err("\tdll, shared\n");
+								gb_printf_err("\tobj, object\n");
+								gb_printf_err("\texe\n");
+								gb_printf_err("\tasm, assembly, assembler\n");
+								gb_printf_err("\tllvm, llvm-ir\n");
 								bad_flags = true;
 								break;
 							}
@@ -1144,6 +1215,18 @@ bool parse_build_flags(Array<String> args) {
 							build_context.use_lld = true;
 							break;
 
+						case BuildFlag_UseSeparateModules:
+							build_context.use_separate_modules = true;
+							break;
+
+						case BuildFlag_ThreadedChecker:
+							build_context.threaded_checker = true;
+							break;
+
+						case BuildFlag_ShowDebugMessages:
+							build_context.show_debug_messages = true;
+							break;
+
 						case BuildFlag_Vet:
 							build_context.vet = true;
 							break;
@@ -1153,7 +1236,8 @@ bool parse_build_flags(Array<String> args) {
 							break;
 
 						case BuildFlag_UseLLVMApi:
-							build_context.use_llvm_api = true;
+							gb_printf_err("-llvm-api flag is not required any more\n");
+							bad_flags = true;
 							break;
 
 						case BuildFlag_IgnoreUnknownAttributes:
@@ -1171,6 +1255,21 @@ bool parse_build_flags(Array<String> args) {
 							string_to_lower(&build_context.microarch);
 							break;
 
+						case BuildFlag_TestName:
+							GB_ASSERT(value.kind == ExactValue_String);
+							{
+								String name = value.value_string;
+								if (!string_is_valid_identifier(name)) {
+									gb_printf_err("Test name '%.*s' must be a valid identifier\n", LIT(name));
+									bad_flags = true;
+									break;
+								}
+								string_set_add(&build_context.test_names, name);
+
+								// NOTE(bill): Allow for multiple -test-name
+								continue;
+							}
+
 						case BuildFlag_DisallowDo:
 							build_context.disallow_do = true;
 							break;
@@ -1184,8 +1283,8 @@ bool parse_build_flags(Array<String> args) {
 							break;
 
 						case BuildFlag_StrictStyle:
-							build_context.insert_semicolon = true;
-							build_context.strict_style = true;
+							gb_printf_err("-strict-style flag is not required any more\n");
+							bad_flags = true;
 							break;
 
 
@@ -1227,6 +1326,9 @@ bool parse_build_flags(Array<String> args) {
 						case BuildFlag_AllPackages:
 							build_context.cmd_doc_flags |= CmdDocFlag_AllPackages;
 							break;
+						case BuildFlag_DocFormat:
+							build_context.cmd_doc_flags |= CmdDocFlag_DocFormat;
+							break;
 						case BuildFlag_IgnoreWarnings:
 							if (build_context.warnings_as_errors) {
 								gb_printf_err("-ignore-warnings cannot be used with -warnings-as-errors\n");
@@ -1242,6 +1344,10 @@ bool parse_build_flags(Array<String> args) {
 							} else {
 								build_context.warnings_as_errors = true;
 							}
+							break;
+
+						case BuildFlag_VerboseErrors:
+							build_context.show_error_line = true;
 							break;
 
 					#if defined(GB_SYSTEM_WINDOWS)
@@ -1368,7 +1474,7 @@ void show_timings(Checker *c, Timings *t) {
 	}
 
 	timings_print_all(t);
-	if (build_context.show_more_timings) {
+	if (build_context.show_debug_messages && build_context.show_more_timings) {
 		{
 			gb_printf("\n");
 			gb_printf("Total Lines     - %td\n", lines);
@@ -1472,96 +1578,27 @@ void show_timings(Checker *c, Timings *t) {
 	}
 }
 
-void remove_temp_files(String output_base) {
+void remove_temp_files(lbGenerator *gen) {
 	if (build_context.keep_temp_files) return;
 
-	auto data = array_make<u8>(heap_allocator(), output_base.len + 30);
-	defer (array_free(&data));
-
-	isize n = output_base.len;
-	gb_memmove(data.data, output_base.text, n);
-#define EXT_REMOVE(s) do {                         \
-		gb_memmove(data.data+n, s, gb_size_of(s)); \
-		gb_file_remove(cast(char const *)data.data);     \
-	} while (0)
-	EXT_REMOVE(".ll");
-	EXT_REMOVE(".bc");
-	EXT_REMOVE("_memcpy_pass.bc");
-	if (build_context.build_mode != BuildMode_Object && !build_context.keep_object_files) {
-	#if defined(GB_SYSTEM_WINDOWS)
-		EXT_REMOVE(".obj");
-		EXT_REMOVE(".res");
-	#else
-		EXT_REMOVE(".o");
-	#endif
+	for_array(i, gen->output_temp_paths) {
+		String path = gen->output_temp_paths[i];
+		gb_file_remove(cast(char const *)path.text);
 	}
 
-#undef EXT_REMOVE
+	if (!build_context.keep_object_files) {
+		switch (build_context.build_mode) {
+		case BuildMode_Executable:
+		case BuildMode_DynamicLibrary:
+			for_array(i, gen->output_object_paths) {
+				String path = gen->output_object_paths[i];
+				gb_file_remove(cast(char const *)path.text);
+			}
+			break;
+		}
+	}
 }
 
-
-
-
-i32 exec_llvm_opt(String output_base) {
-#if defined(GB_SYSTEM_WINDOWS)
-	// For more passes arguments: http://llvm.org/docs/Passes.html
-
-  return system_exec_command_line_app("llvm-opt",
-		"\"%.*sbin/opt\" \"%.*s.ll\" -o \"%.*s_memcpy_pass.bc\" -memcpyopt"
-		"",
-		LIT(build_context.ODIN_ROOT),
-		LIT(output_base), LIT(output_base))
-
-  || system_exec_command_line_app("llvm-opt",
-		"\"%.*sbin/opt\" \"%.*s_memcpy_pass.bc\" -o \"%.*s.bc\" %.*s "
-		"",
-		LIT(build_context.ODIN_ROOT),
-		LIT(output_base), LIT(output_base),
-		LIT(build_context.opt_flags));
-#else
-	// NOTE(zangent): This is separate because it seems that LLVM tools are packaged
-	//   with the Windows version, while they will be system-provided on MacOS and GNU/Linux
-
-  return system_exec_command_line_app("llvm-opt",
-    "opt \"%.*s.ll\" -o \"%.*s_memcpy_pass.bc\" -memcpyopt"
-    "",
-    LIT(output_base), LIT(output_base))
-
-	|| system_exec_command_line_app("llvm-opt",
-		"opt \"%.*s_memcpy_pass.bc\" -o \"%.*s.bc\" %.*s "
-		"",
-		LIT(output_base), LIT(output_base),
-		LIT(build_context.opt_flags));
-#endif
-}
-
-i32 exec_llvm_llc(String output_base) {
-	// For more arguments: http://llvm.org/docs/CommandGuide/llc.html
-#if defined(GB_SYSTEM_WINDOWS)
-	return system_exec_command_line_app("llvm-llc",
-		"\"%.*sbin\\llc\" \"%.*s.bc\" -filetype=obj -O%d "
-		"-o \"%.*s.obj\" "
-		"%.*s"
-		"",
-		LIT(build_context.ODIN_ROOT),
-		LIT(output_base),
-		build_context.optimization_level,
-		LIT(output_base),
-		LIT(build_context.llc_flags));
-#else
-	// NOTE(zangent): Linux / Unix is unfinished and not tested very well.
-	return system_exec_command_line_app("llc",
-		"llc \"%.*s.bc\" -filetype=obj -relocation-model=pic -O%d "
-		"%.*s "
-		"%s%.*s",
-		LIT(output_base),
-		build_context.optimization_level,
-		LIT(build_context.llc_flags),
-		build_context.cross_compiling ? "-mtriple=" : "",
-		cast(int)(build_context.cross_compiling ? build_context.metrics.target_triplet.len : 0),
-		build_context.metrics.target_triplet.text);
-#endif
-}
 
 void print_show_help(String const arg0, String const &command) {
 	print_usage_line(0, "%.*s is a tool for managing Odin source code", LIT(arg0));
@@ -1577,7 +1614,7 @@ void print_show_help(String const arg0, String const &command) {
 	} else if (command == "check") {
 		print_usage_line(1, "check     parse and type check .odin file");
 	} else if (command == "test") {
-		print_usage_line(1, "test      build ands runs 'test_*' procedures in the initial package");
+		print_usage_line(1, "test      build ands runs procedures with the attribute @(test) in the initial package");
 	} else if (command == "query") {
 		print_usage_line(1, "query     [experimental] parse, type check, and output a .json file containing information about the program");
 	} else if (command == "doc") {
@@ -1592,6 +1629,7 @@ void print_show_help(String const arg0, String const &command) {
 	bool doc = command == "doc";
 	bool build = command == "build";
 	bool run_or_build = command == "run" || command == "build" || command == "test";
+	bool test_only = command == "test";
 	bool check_only = command == "check";
 	bool check = run_or_build || command == "check";
 
@@ -1607,6 +1645,10 @@ void print_show_help(String const arg0, String const &command) {
 		print_usage_line(1, "-all-packages");
 		print_usage_line(2, "Generates documentation for all packages used in the current project");
 		print_usage_line(0, "");
+
+		print_usage_line(1, "-doc-format");
+		print_usage_line(2, "Generates documentation as the .odin-doc format (useful for external tooling)");
+		print_usage_line(0, "");
 	}
 
 	if (run_or_build) {
@@ -1616,9 +1658,15 @@ void print_show_help(String const arg0, String const &command) {
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-opt:<integer>");
-		print_usage_line(2, "Set the optimization level for complication");
+		print_usage_line(2, "Set the optimization level for compilation");
 		print_usage_line(2, "Accepted values: 0, 1, 2, 3");
 		print_usage_line(2, "Example: -opt:2");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-o:<string>");
+		print_usage_line(2, "Set the optimization mode for compilation");
+		print_usage_line(2, "Accepted values: minimal, size, speed");
+		print_usage_line(2, "Example: -o:speed");
 		print_usage_line(0, "");
 	}
 
@@ -1675,6 +1723,11 @@ void print_show_help(String const arg0, String const &command) {
 		print_usage_line(3, "-build-mode:shared    Build as a dynamically linked library");
 		print_usage_line(3, "-build-mode:obj       Build as an object file");
 		print_usage_line(3, "-build-mode:object    Build as an object file");
+		print_usage_line(3, "-build-mode:assembly  Build as an object file");
+		print_usage_line(3, "-build-mode:assembler Build as an assembly file");
+		print_usage_line(3, "-build-mode:asm       Build as an assembly file");
+		print_usage_line(3, "-build-mode:llvm-ir   Build as an LLVM IR file");
+		print_usage_line(3, "-build-mode:llvm      Build as an LLVM IR file");
 		print_usage_line(0, "");
 	}
 
@@ -1701,12 +1754,24 @@ void print_show_help(String const arg0, String const &command) {
 		print_usage_line(2, "Disables automatic linking with the C Run Time");
 		print_usage_line(0, "");
 
-		print_usage_line(1, "-use-lld");
+		print_usage_line(1, "-lld");
 		print_usage_line(2, "Use the LLD linker rather than the default");
 		print_usage_line(0, "");
+
+		print_usage_line(1, "-use-separate-modules");
+		print_usage_line(1, "[EXPERIMENTAL]");
+		print_usage_line(2, "The backend generates multiple build units which are then linked together");
+		print_usage_line(2, "Normally, a single build unit is generated for a standard project");
+		print_usage_line(0, "");
+
 	}
 
 	if (check) {
+		print_usage_line(1, "-threaded-checker");
+		print_usage_line(1, "[EXPERIMENTAL]");
+		print_usage_line(2, "Multithread the semantic checker stage");
+		print_usage_line(0, "");
+
 		print_usage_line(1, "-vet");
 		print_usage_line(2, "Do extra checks on the code");
 		print_usage_line(2, "Extra checks include:");
@@ -1729,6 +1794,12 @@ void print_show_help(String const arg0, String const &command) {
 			print_usage_line(2, "Removes default requirement of an entry point (e.g. main procedure)");
 			print_usage_line(0, "");
 		}
+	}
+
+	if (test_only) {
+		print_usage_line(1, "-test-name:<string>");
+		print_usage_line(2, "Run specific test only by name");
+		print_usage_line(0, "");
 	}
 
 	if (run_or_build) {
@@ -1757,16 +1828,16 @@ void print_show_help(String const arg0, String const &command) {
 		print_usage_line(2, "Inserts semicolons on newlines during tokenization using a basic rule");
 		print_usage_line(0, "");
 
-		print_usage_line(1, "-strict-style");
-		print_usage_line(2, "Enforces code style stricter whilst parsing, requiring such things as trailing commas");
-		print_usage_line(0, "");
-
 		print_usage_line(1, "-ignore-warnings");
 		print_usage_line(2, "Ignores warning messages");
 		print_usage_line(0, "");
 
 		print_usage_line(1, "-warnings-as-errors");
 		print_usage_line(2, "Treats warning messages as error messages");
+		print_usage_line(0, "");
+
+		print_usage_line(1, "-verbose-errors");
+		print_usage_line(2, "Prints verbose error messages showing the code on that line and the location in that line");
 		print_usage_line(0, "");
 	}
 
@@ -1875,23 +1946,37 @@ void print_show_unused(Checker *c) {
 	print_usage_line(0, "");
 }
 
-void enforce_platform_settings(void) {
-#if defined(GB_SYSTEM_OSX) && defined(GB_CPU_ARM)
-	build_context.use_llvm_api = true;
-#endif
+bool check_env(void) {
+	gbAllocator a = heap_allocator();
+	char const *odin_root = gb_get_env("ODIN_ROOT", a);
+	defer (gb_free(a, cast(void *)odin_root));
+	if (odin_root) {
+		if (!gb_file_exists(odin_root)) {
+			gb_printf_err("Invalid ODIN_ROOT, directory does not exist, got %s\n", odin_root);
+			return false;
+		}
+		String path = make_string_c(odin_root);
+		if (!path_is_directory(path)) {
+			gb_printf_err("Invalid ODIN_ROOT, expected a directory, got %s\n", odin_root);
+			return false;
+		}
+	}
+	return true;
 }
 
 
 int main(int arg_count, char const **arg_ptr) {
+#define TIME_SECTION(str) do { debugf("[Section] %s\n", str); timings_start_section(&global_timings, str_lit(str)); } while (0)
+
 	if (arg_count < 2) {
 		usage(make_string_c(arg_ptr[0]));
 		return 1;
 	}
 
-	Timings *timings = &global_timings;
+	timings_init(&global_timings, str_lit("Total Time"), 2048);
+	defer (timings_destroy(&global_timings));
 
-	timings_init(timings, str_lit("Total Time"), 128);
-	defer (timings_destroy(timings));
+	TIME_SECTION("initialization");
 
 	arena_init(&permanent_arena, heap_allocator());
 	temp_allocator_init(&temporary_allocator_data, 16*1024*1024);
@@ -1902,7 +1987,11 @@ int main(int arg_count, char const **arg_ptr) {
 	init_string_interner();
 	init_global_error_collector();
 	init_keyword_hash_table();
-	global_big_int_init();
+	init_type_mutex();
+
+	if (!check_env()) {
+		return 1;
+	}
 
 	array_init(&library_collections, heap_allocator());
 	// NOTE(bill): 'core' cannot be (re)defined by the user
@@ -1910,7 +1999,7 @@ int main(int arg_count, char const **arg_ptr) {
 
 	map_init(&build_context.defined_values, heap_allocator());
 	build_context.extra_packages.allocator = heap_allocator();
-
+	string_set_init(&build_context.test_names, heap_allocator());
 
 	Array<String> args = setup_args(arg_count, arg_ptr);
 
@@ -2010,7 +2099,7 @@ int main(int arg_count, char const **arg_ptr) {
 		#endif
 
 		#ifdef GIT_SHA
-		gb_printf("-%s", GIT_SHA);
+		gb_printf(":%s", GIT_SHA);
 		#endif
 
 		gb_printf("\n");
@@ -2035,8 +2124,6 @@ int main(int arg_count, char const **arg_ptr) {
 		return 0;
 	}
 
-	enforce_platform_settings();
-
 	// NOTE(bill): add 'shared' directory if it is not already set
 	if (!find_library_collection_path(str_lit("shared"), nullptr)) {
 		add_library_collection(str_lit("shared"),
@@ -2049,25 +2136,15 @@ int main(int arg_count, char const **arg_ptr) {
 	// 	print_usage_line(0, "%.*s 32-bit is not yet supported for this platform", LIT(args[0]));
 	// 	return 1;
 	// }
-	if (build_context.metrics.os == TargetOs_js) {
-		if (!build_context.use_llvm_api) {
-			print_usage_line(0, "%.*s - js platform only supported with the -llvm-api backend", LIT(args[0]));
-			return 1;
-		}
-	}
-	if (!build_context.use_llvm_api) {
-		if (build_context.build_mode == BuildMode_Assembly) {
-			print_usage_line(0, "-build-mode:assembly is only supported with the -llvm-api backend", LIT(args[0]));
-			return 1;
-		}
-	}
 
 	init_universal();
 	// TODO(bill): prevent compiling without a linker
 
-	timings_start_section(timings, str_lit("parse files"));
-
 	Parser parser = {0};
+	Checker checker = {0};
+
+	TIME_SECTION("parse files");
+
 	if (!init_parser(&parser)) {
 		return 1;
 	}
@@ -2083,18 +2160,13 @@ int main(int arg_count, char const **arg_ptr) {
 
 	temp_allocator_free_all(&temporary_allocator_data);
 
-	timings_start_section(timings, str_lit("type check"));
+	TIME_SECTION("type check");
 
-	Checker checker = {0};
+	checker.parser = &parser;
+	init_checker(&checker);
+	defer (destroy_checker(&checker));
 
-	bool checked_inited = init_checker(&checker, &parser);
-	defer (if (checked_inited) {
-		destroy_checker(&checker);
-	});
-
-	if (checked_inited) {
-		check_parsed_files(&checker);
-	}
+	check_parsed_files(&checker);
 	if (any_errors()) {
 		return 1;
 	}
@@ -2115,10 +2187,10 @@ int main(int arg_count, char const **arg_ptr) {
 		}
 
 		if (build_context.query_data_set_settings.ok) {
-			generate_and_print_query_data(&checker, timings);
+			generate_and_print_query_data(&checker, &global_timings);
 		} else {
 			if (build_context.show_timings) {
-				show_timings(&checker, timings);
+				show_timings(&checker, &global_timings);
 			}
 		}
 
@@ -2129,454 +2201,44 @@ int main(int arg_count, char const **arg_ptr) {
 		return 0;
 	}
 
-	if (!checked_inited) {
+	TIME_SECTION("LLVM API Code Gen");
+	lbGenerator gen = {};
+	if (!lb_init_generator(&gen, &checker)) {
 		return 1;
 	}
+	lb_generate_code(&gen);
 
-	if (build_context.use_llvm_api) {
-#if defined(LLVM_BACKEND_SUPPORT)
-		timings_start_section(timings, str_lit("LLVM API Code Gen"));
-		lbGenerator gen = {};
-		if (!lb_init_generator(&gen, &checker)) {
-			return 1;
-		}
-		lb_generate_code(&gen);
+	temp_allocator_free_all(&temporary_allocator_data);
 
-		temp_allocator_free_all(&temporary_allocator_data);
-
-		switch (build_context.build_mode) {
-		case BuildMode_Executable:
-		case BuildMode_DynamicLibrary:
-			i32 result = linker_stage(&gen);
-      if(result != 0) {
-        return 1;
-      }
-			break;
-		}
-
-		if (build_context.show_timings) {
-			show_timings(&checker, timings);
-		}
-
-		remove_temp_files(gen.output_base);
-
-	#if defined(GB_COMPILER_MSVC)
-		if (false) {
-			PROCESS_MEMORY_COUNTERS_EX pmc = {};
-			GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc));
-			SIZE_T virtual_mem_used_by_me = pmc.PrivateUsage;
-			gb_printf_err("virtual_memory_used:            %tu B\n", virtual_mem_used_by_me);
-
-			Parser *p      = checker.parser;
-			isize lines    = p->total_line_count;
-			isize tokens   = p->total_token_count;
-			isize files    = 0;
-			isize packages = p->packages.count;
-			isize total_file_size = 0;
-			for_array(i, p->packages) {
-				files += p->packages[i]->files.count;
-				for_array(j, p->packages[i]->files) {
-					AstFile *file = p->packages[i]->files[j];
-					total_file_size += file->tokenizer.end - file->tokenizer.start;
-				}
-			}
-			gb_printf_err("total_file_size:                %lld B\n", total_file_size);
-			gb_printf_err("lines:                          %lld\n", lines);
-			gb_printf_err("files:                          %lld\n", files);
-			gb_printf_err("tokens:                         %lld\n", tokens);
-			gb_printf_err("packages:                       %lld\n", packages);
-		}
-	#endif
-
-		if (run_output) {
-		#if defined(GB_SYSTEM_WINDOWS)
-			return system_exec_command_line_app("odin run", "%.*s.exe %.*s", LIT(gen.output_base), LIT(run_args_string));
-		#else
-			//NOTE(thebirk): This whole thing is a little leaky
-			String output_ext = {};
-			String complete_path = concatenate_strings(heap_allocator(), gen.output_base, output_ext);
-			complete_path = path_to_full_path(heap_allocator(), complete_path);
-			return system_exec_command_line_app("odin run", "\"%.*s\" %.*s", LIT(complete_path), LIT(run_args_string));
-		#endif
-		}
-
-		return 0;
-#else
-		gb_printf_err("LLVM C API backend is not supported on this platform yet\n");
-		return 1;
-#endif
-	} else {
-		irGen ir_gen = {0};
-		if (!ir_gen_init(&ir_gen, &checker)) {
-			return 1;
-		}
-		// defer (ir_gen_destroy(&ir_gen));
-
-
-		timings_start_section(timings, str_lit("llvm ir gen"));
-		ir_gen_tree(&ir_gen);
-
-		temp_allocator_free_all(&temporary_allocator_data);
-
-		timings_start_section(timings, str_lit("llvm ir opt tree"));
-		ir_opt_tree(&ir_gen);
-
-		temp_allocator_free_all(&temporary_allocator_data);
-
-		timings_start_section(timings, str_lit("llvm ir print"));
-		print_llvm_ir(&ir_gen);
-
-		temp_allocator_free_all(&temporary_allocator_data);
-
-
-		String output_name = ir_gen.output_name;
-		String output_base = ir_gen.output_base;
-
-		build_context.optimization_level = gb_clamp(build_context.optimization_level, 0, 3);
-
-		timings_start_section(timings, str_lit("llvm-opt"));
-		exec_llvm_opt(output_base);
-
-		timings_start_section(timings, str_lit("llvm-llc"));
-		exec_llvm_llc(output_base);
-
-		if (build_context.build_mode == BuildMode_Object) {
-			// Ignore the linker
+	switch (build_context.build_mode) {
+	case BuildMode_Executable:
+	case BuildMode_DynamicLibrary:
+		i32 result = linker_stage(&gen);
+		if (result != 0) {
 			if (build_context.show_timings) {
-				show_timings(&checker, timings);
+				show_timings(&checker, &global_timings);
 			}
-
-			remove_temp_files(output_base);
-			return 0;
+			return 1;
 		}
+		break;
+	}
 
-		if (build_context.cross_compiling && selected_target_metrics->metrics == &target_essence_amd64) {
-	#ifdef GB_SYSTEM_UNIX
-			system_exec_command_line_app("linker", "x86_64-essence-gcc -ffreestanding -nostdlib \"%.*s.o\" -o \"%.*s\" %.*s %.*s",
-					LIT(output_base), LIT(output_base), LIT(build_context.link_flags), LIT(build_context.extra_linker_flags));
+	if (build_context.show_timings) {
+		show_timings(&checker, &global_timings);
+	}
+
+	remove_temp_files(&gen);
+
+	if (run_output) {
+	#if defined(GB_SYSTEM_WINDOWS)
+		return system_exec_command_line_app("odin run", "%.*s.exe %.*s", LIT(gen.output_base), LIT(run_args_string));
 	#else
-			gb_printf_err("Linking for cross compilation for this platform is not yet supported (%.*s %.*s)\n",
-				LIT(target_os_names[build_context.metrics.os]),
-				LIT(target_arch_names[build_context.metrics.arch])
-			);
+		//NOTE(thebirk): This whole thing is a little leaky
+		String output_ext = {};
+		String complete_path = concatenate_strings(heap_allocator(), gen.output_base, output_ext);
+		complete_path = path_to_full_path(heap_allocator(), complete_path);
+		return system_exec_command_line_app("odin run", "\"%.*s\" %.*s", LIT(complete_path), LIT(run_args_string));
 	#endif
-		} else if (build_context.cross_compiling && build_context.different_os) {
-			gb_printf_err("Linking for cross compilation for this platform is not yet supported (%.*s %.*s)\n",
-				LIT(target_os_names[build_context.metrics.os]),
-				LIT(target_arch_names[build_context.metrics.arch])
-			);
-			build_context.keep_object_files = true;
-		} else {
-		#if defined(GB_SYSTEM_WINDOWS)
-			timings_start_section(timings, str_lit("msvc-link"));
-
-			gbString lib_str = gb_string_make(heap_allocator(), "");
-			defer (gb_string_free(lib_str));
-			char lib_str_buf[1024] = {0};
-
-			char const *output_ext = "exe";
-			gbString link_settings = gb_string_make_reserve(heap_allocator(), 256);
-			defer (gb_string_free(link_settings));
-
-
-			// NOTE(ic): It would be nice to extend this so that we could specify the Visual Studio version that we want instead of defaulting to the latest.
-			Find_Result_Utf8 find_result = find_visual_studio_and_windows_sdk_utf8();
-
-			if (find_result.windows_sdk_version == 0) {
-				gb_printf_err("Windows SDK not found.\n");
-				return 1;
-			}
-
-			if (build_context.ignore_microsoft_magic) {
-				find_result = {};
-			}
-
-			// Add library search paths.
-			if (find_result.vs_library_path.len > 0) {
-				GB_ASSERT(find_result.windows_sdk_um_library_path.len > 0);
-				GB_ASSERT(find_result.windows_sdk_ucrt_library_path.len > 0);
-
-				String path = {};
-				auto add_path = [&](String path) {
-					if (path[path.len-1] == '\\') {
-						path.len -= 1;
-					}
-					link_settings = gb_string_append_fmt(link_settings, " /LIBPATH:\"%.*s\"", LIT(path));
-				};
-				add_path(find_result.windows_sdk_um_library_path);
-				add_path(find_result.windows_sdk_ucrt_library_path);
-				add_path(find_result.vs_library_path);
-			}
-
-			for_array(i, ir_gen.module.foreign_library_paths) {
-				String lib = ir_gen.module.foreign_library_paths[i];
-				GB_ASSERT(lib.len < gb_count_of(lib_str_buf)-1);
-				isize len = gb_snprintf(lib_str_buf, gb_size_of(lib_str_buf),
-				                        " \"%.*s\"", LIT(lib));
-				lib_str = gb_string_appendc(lib_str, lib_str_buf);
-			}
-
-
-
-			if (build_context.build_mode == BuildMode_DynamicLibrary) {
-				output_ext = "dll";
-				link_settings = gb_string_append_fmt(link_settings, " /DLL");
-			} else {
-				link_settings = gb_string_append_fmt(link_settings, " /ENTRY:mainCRTStartup");
-			}
-
-			if (build_context.pdb_filepath != "") {
-				link_settings = gb_string_append_fmt(link_settings, " /PDB:%.*s", LIT(build_context.pdb_filepath));
-			}
-
-			if (build_context.no_crt) {
-				link_settings = gb_string_append_fmt(link_settings, " /nodefaultlib");
-			} else {
-				link_settings = gb_string_append_fmt(link_settings, " /defaultlib:libcmt");
-			}
-
-			if (ir_gen.module.generate_debug_info) {
-				link_settings = gb_string_append_fmt(link_settings, " /DEBUG");
-			}
-
-
-			char const *subsystem_str = build_context.use_subsystem_windows ? "WINDOWS" : "CONSOLE";
-
-			if (!build_context.use_lld) { // msvc
-				if (build_context.has_resource) {
-					i32 result = system_exec_command_line_app("msvc-link",
-						"\"rc.exe\" /nologo /fo \"%.*s.res\" \"%.*s.rc\"",
-						LIT(output_base),
-						LIT(build_context.resource_filepath)
-					);
-
-          if(result != 0) {
-            return 1;
-          }
-
-          result = system_exec_command_line_app("msvc-link",
-						"\"%.*slink.exe\" \"%.*s.obj\" \"%.*s.res\" -OUT:\"%.*s.%s\" %s "
-						"/nologo /incremental:no /opt:ref /subsystem:%s "
-						" %.*s "
-						" %.*s "
-						" %s "
-						"",
-						LIT(find_result.vs_exe_path), LIT(output_base), LIT(output_base), LIT(output_base), output_ext,
-						link_settings,
-						subsystem_str,
-						LIT(build_context.link_flags),
-						LIT(build_context.extra_linker_flags),
-						lib_str
-					);
-
-          if(result != 0) {
-            return 1;
-          }
-
-				} else {
-          i32 result =  system_exec_command_line_app("msvc-link",
-						"\"%.*slink.exe\" \"%.*s.obj\" -OUT:\"%.*s.%s\" %s "
-						"/nologo /incremental:no /opt:ref /subsystem:%s "
-						" %.*s "
-						" %.*s "
-						" %s "
-						"",
-						LIT(find_result.vs_exe_path), LIT(output_base), LIT(output_base), output_ext,
-						link_settings,
-						subsystem_str,
-						LIT(build_context.link_flags),
-						LIT(build_context.extra_linker_flags),
-						lib_str
-					);
-
-          if(result != 0) {
-            return 1;
-          }
-				}
-			} else { // lld
-				i32 result = system_exec_command_line_app("msvc-link",
-					"\"%.*s\\bin\\lld-link\" \"%.*s.obj\" -OUT:\"%.*s.%s\" %s "
-					"/nologo /incremental:no /opt:ref /subsystem:%s "
-					" %.*s "
-					" %.*s "
-					" %s "
-					"",
-					LIT(build_context.ODIN_ROOT),
-					LIT(output_base), LIT(output_base), output_ext,
-					link_settings,
-					subsystem_str,
-					LIT(build_context.link_flags),
-					LIT(build_context.extra_linker_flags),
-					lib_str
-				);
-
-        if(result != 0) {
-          return 1;
-        }
-			}
-
-			if (build_context.show_timings) {
-				show_timings(&checker, timings);
-			}
-
-			remove_temp_files(output_base);
-
-			if (run_output) {
-				return system_exec_command_line_app("odin run", "%.*s.exe %.*s", LIT(output_base), LIT(run_args_string));
-			}
-		#else
-			timings_start_section(timings, str_lit("ld-link"));
-
-			// NOTE(vassvik): get cwd, for used for local shared libs linking, since those have to be relative to the exe
-			char cwd[256];
-			getcwd(&cwd[0], 256);
-			//printf("%s\n", cwd);
-
-			// NOTE(vassvik): needs to add the root to the library search paths, so that the full filenames of the library
-			//                files can be passed with -l:
-			gbString lib_str = gb_string_make(heap_allocator(), "-L/");
-			defer (gb_string_free(lib_str));
-
-			for_array(i, ir_gen.module.foreign_library_paths) {
-				String lib = ir_gen.module.foreign_library_paths[i];
-
-				// NOTE(zangent): Sometimes, you have to use -framework on MacOS.
-				//   This allows you to specify '-f' in a #foreign_system_library,
-				//   without having to implement any new syntax specifically for MacOS.
-				#if defined(GB_SYSTEM_OSX)
-					if (string_ends_with(lib, str_lit(".framework"))) {
-						// framework thingie
-						String lib_name = lib;
-						lib_name = remove_extension_from_path(lib_name);
-						lib_str = gb_string_append_fmt(lib_str, " -framework %.*s ", LIT(lib_name));
-
-				} else if (string_ends_with(lib, str_lit(".a")) || string_ends_with(lib, str_lit(".o")) || string_ends_with(lib, str_lit(".dylib"))) {
-					// For:
-					// object
-					// dynamic lib
-					// static libs, absolute full path relative to the file in which the lib was imported from
-					lib_str = gb_string_append_fmt(lib_str, " %.*s ", LIT(lib));
-				} else {
-						// dynamic or static system lib, just link regularly searching system library paths
-						lib_str = gb_string_append_fmt(lib_str, " -l%.*s ", LIT(lib));
-					}
-				#else
-					// NOTE(vassvik): static libraries (.a files) in linux can be linked to directly using the full path,
-					//                since those are statically linked to at link time. shared libraries (.so) has to be
-					//                available at runtime wherever the executable is run, so we make require those to be
-					//                local to the executable (unless the system collection is used, in which case we search
-					//                the system library paths for the library file).
-					if (string_ends_with(lib, str_lit(".a"))) {
-						// static libs, absolute full path relative to the file in which the lib was imported from
-						lib_str = gb_string_append_fmt(lib_str, " -l:\"%.*s\" ", LIT(lib));
-					} else if (string_ends_with(lib, str_lit(".so"))) {
-						// dynamic lib, relative path to executable
-						// NOTE(vassvik): it is the user's responsibility to make sure the shared library files are visible
-						//                at runtimeto the executable
-						lib_str = gb_string_append_fmt(lib_str, " -l:\"%s/%.*s\" ", cwd, LIT(lib));
-					} else {
-						// dynamic or static system lib, just link regularly searching system library paths
-						lib_str = gb_string_append_fmt(lib_str, " -l%.*s ", LIT(lib));
-					}
-				#endif
-			}
-
-			// Unlike the Win32 linker code, the output_ext includes the dot, because
-			// typically executable files on *NIX systems don't have extensions.
-			String output_ext = {};
-			gbString link_settings = gb_string_make_reserve(heap_allocator(), 32);
-			char const *linker;
-			if (build_context.build_mode == BuildMode_DynamicLibrary) {
-				// NOTE(tetra, 2020-11-06): __$startup_runtime must be called at DLL load time.
-				// Clang, for some reason, won't let us pass the '-init' flag that lets us do this,
-				// so use ld instead.
-				// :UseLDForShared
-				linker = "ld";
-				// NOTE(tetra, 2021-02-24): On Darwin, the symbol has _3_ underscores; on Linux, it only has 2.
-				link_settings = gb_string_append_fmt(link_settings, "-init '%s$startup_runtime' ", build_context.metrics.os == TargetOs_darwin ? "___" : "__");
-				// Shared libraries are .dylib on MacOS and .so on Linux.
-				#if defined(GB_SYSTEM_OSX)
-					output_ext = STR_LIT(".dylib");
-					link_settings = gb_string_appendc(link_settings, "-dylib -dynamic ");
-				#else
-					output_ext = STR_LIT(".so");
-					link_settings = gb_string_appendc(link_settings, "-shared ");
-				#endif
-			} else {
-				#if defined(GB_SYSTEM_OSX)
-					linker = "ld";
-				#else
-					// TODO(zangent): Figure out how to make ld work on Linux.
-					//   It probably has to do with including the entire CRT, but
-					//   that's quite a complicated issue to solve while remaining distro-agnostic.
-					//   Clang can figure out linker flags for us, and that's good enough _for now_.
-					linker = "clang -Wno-unused-command-line-argument";
-				#endif
-			}
-
-
-			if (build_context.out_filepath.len > 0) {
-				//NOTE(thebirk): We have a custom -out arguments, so we should use the extension from that
-				isize pos = string_extension_position(build_context.out_filepath);
-				if (pos > 0) {
-					output_ext = substring(build_context.out_filepath, pos, build_context.out_filepath.len);
-				}
-			}
-
-			i32 result = system_exec_command_line_app("ld-link",
-				"%s \"%.*s.o\" -o \"%.*s%.*s\" %s "
-				" %s "
-				" %.*s "
-				" %.*s "
-				" %s "
-				#if defined(GB_SYSTEM_OSX)
-					// This sets a requirement of Mountain Lion and up, but the compiler doesn't work without this limit.
-					// NOTE: If you change this (although this minimum is as low as you can go with Odin working)
-					//       make sure to also change the 'mtriple' param passed to 'opt'
-					" -macosx_version_min 10.8.0 "
-					// This points the linker to where the entry point is
-					" -e _main "
-				#endif
-				, linker, LIT(output_base), LIT(output_base), LIT(output_ext),
-				lib_str,
-        			#if defined(GB_SYSTEM_OSX)
-          				"-lSystem -lm -syslibroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -L/usr/local/lib",
-        			#else
-          				"-lc -lm",
-        			#endif
-				LIT(build_context.link_flags),
-				LIT(build_context.extra_linker_flags),
-				link_settings);
-
-      if(result != 0) {
-        return 1;
-      }
-
-		#if defined(GB_SYSTEM_OSX)
-			if (build_context.ODIN_DEBUG) {
-				// NOTE: macOS links DWARF symbols dynamically. Dsymutil will map the stubs in the exe
-				// to the symbols in the object file
-				system_exec_command_line_app("dsymutil",
-					"dsymutil %.*s%.*s", LIT(output_base), LIT(output_ext)
-				);
-			}
-		#endif
-
-
-			if (build_context.show_timings) {
-				show_timings(&checker, timings);
-			}
-
-			remove_temp_files(output_base);
-
-			if (run_output) {
-				//NOTE(thebirk): This whole thing is a little leaky
-				String complete_path = concatenate_strings(heap_allocator(), output_base, output_ext);
-				complete_path = path_to_full_path(heap_allocator(), complete_path);
-				return system_exec_command_line_app("odin run", "\"%.*s\" %.*s", LIT(complete_path), LIT(run_args_string));
-			}
-		#endif
-		}
 	}
 
 	return 0;

@@ -128,21 +128,6 @@ enum StructSoaKind {
 	StructSoa_Dynamic = 3,
 };
 
-enum TypeAtomOpKind {
-	TypeAtomOp_Invalid,
-
-	TypeAtomOp_index_get,
-	TypeAtomOp_index_set,
-	TypeAtomOp_slice,
-	TypeAtomOp_index_get_ptr,
-
-	TypeAtomOp_COUNT,
-};
-
-struct TypeAtomOpTable {
-	Entity *op[TypeAtomOp_COUNT];
-};
-
 struct TypeStruct {
 	Array<Entity *> fields;
 	Array<String>   tags;
@@ -155,8 +140,6 @@ struct TypeStruct {
 
 	i64      custom_align;
 	Entity * names;
-
-	TypeAtomOpTable *atom_op_table;
 
 	Type *        soa_elem;
 	i64           soa_count;
@@ -180,8 +163,6 @@ struct TypeUnion {
 	Type *        polymorphic_params; // Type_Tuple
 	Type *        polymorphic_parent;
 
-	TypeAtomOpTable *atom_op_table;
-
 	bool          no_nil;
 	bool          maybe;
 	bool          is_polymorphic;
@@ -195,15 +176,11 @@ struct TypeProc {
 	Type *   results; // Type_Tuple
 	i32      param_count;
 	i32      result_count;
-	u64      tags;
 	isize    specialization_count;
 	ProcCallingConvention calling_convention;
 	i32      variadic_index;
-	Array<Type *> abi_compat_params;
-	Type *        abi_compat_result_type;
 	// TODO(bill): Make this a flag set rather than bools
 	bool     variadic;
-	bool     abi_types_set;
 	bool     require_results;
 	bool     c_vararg;
 	bool     is_polymorphic;
@@ -284,7 +261,6 @@ struct TypeProc {
 	TYPE_KIND(SimdVector, struct {                        \
 		i64   count;                                      \
 		Type *elem;                                       \
-		bool is_x86_mmx;                                  \
 	})                                                    \
 	TYPE_KIND(RelativePointer, struct {                   \
 		Type *pointer_type;                               \
@@ -319,7 +295,6 @@ enum TypeFlag : u32 {
 	TypeFlag_Polymorphic     = 1<<1,
 	TypeFlag_PolySpecialized = 1<<2,
 	TypeFlag_InProcessOfCheckingPolymorphic = 1<<3,
-	TypeFlag_InProcessOfCheckingABI = 1<<4,
 };
 
 struct Type {
@@ -396,6 +371,8 @@ struct Selection {
 	Entity *   entity;
 	Array<i32> index;
 	bool       indirect; // Set if there was a pointer deref anywhere down the line
+	u8 swizzle_count;    // maximum components = 4
+	u8 swizzle_indices;  // 2 bits per component, representing which swizzle index
 };
 Selection empty_selection = {0};
 
@@ -461,8 +438,8 @@ gb_global Type basic_types[] = {
 	{Type_Basic, {Basic_i64,               BasicFlag_Integer,                          8, STR_LIT("i64")}},
 	{Type_Basic, {Basic_u64,               BasicFlag_Integer | BasicFlag_Unsigned,     8, STR_LIT("u64")}},
 
-	{Type_Basic, {Basic_i128,               BasicFlag_Integer,                        16, STR_LIT("i128")}},
-	{Type_Basic, {Basic_u128,               BasicFlag_Integer | BasicFlag_Unsigned,   16, STR_LIT("u128")}},
+	{Type_Basic, {Basic_i128,              BasicFlag_Integer,                         16, STR_LIT("i128")}},
+	{Type_Basic, {Basic_u128,              BasicFlag_Integer | BasicFlag_Unsigned,    16, STR_LIT("u128")}},
 
 	{Type_Basic, {Basic_rune,              BasicFlag_Integer | BasicFlag_Rune,         4, STR_LIT("rune")}},
 
@@ -680,11 +657,11 @@ gb_global Type *t_source_code_location_ptr       = nullptr;
 gb_global Type *t_map_hash                       = nullptr;
 gb_global Type *t_map_header                     = nullptr;
 
-gb_global Type *t_vector_x86_mmx                 = nullptr;
-
 
 gb_global Type *t_equal_proc  = nullptr;
 gb_global Type *t_hasher_proc = nullptr;
+
+gb_global gbMutex g_type_mutex;
 
 
 i64      type_size_of               (Type *t);
@@ -698,6 +675,10 @@ bool are_types_identical(Type *x, Type *y);
 bool is_type_pointer(Type *t);
 bool is_type_slice(Type *t);
 bool is_type_integer(Type *t);
+
+void init_type_mutex(void) {
+	gb_mutex_init(&g_type_mutex);
+}
 
 bool type_ptr_set_exists(PtrSet<Type *> *s, Type *t) {
 	if (ptr_set_exists(s, t)) {
@@ -1013,6 +994,20 @@ bool is_type_integer(Type *t) {
 	}
 	return false;
 }
+bool is_type_integer_like(Type *t) {
+	t = core_type(t);
+	if (t->kind == Type_Basic) {
+		return (t->Basic.flags & (BasicFlag_Integer|BasicFlag_Boolean)) != 0;
+	}
+	if (t->kind == Type_BitSet) {
+		if (t->BitSet.underlying) {
+			return is_type_integer_like(t->BitSet.underlying);
+		}
+		return true;
+	}
+	return false;
+}
+
 bool is_type_unsigned(Type *t) {
 	t = base_type(t);
 	// t = core_type(t);
@@ -1273,6 +1268,20 @@ bool is_type_rune_array(Type *t) {
 }
 
 
+bool is_type_array_like(Type *t) {
+	return is_type_array(t) || is_type_enumerated_array(t);
+}
+i64 get_array_type_count(Type *t) {
+	Type *bt = base_type(t);
+	if (bt->kind == Type_Array) {
+		return bt->Array.count;
+	} else if (bt->kind == Type_EnumeratedArray) {
+		return bt->EnumeratedArray.count;
+	}
+	GB_ASSERT(is_type_array_like(t));
+	return -1;
+}
+
 
 
 Type *core_array_type(Type *t) {
@@ -1362,8 +1371,7 @@ bool is_type_union_maybe_pointer_original_alignment(Type *t) {
 
 
 
-
-bool is_type_integer_endian_big(Type *t) {
+bool is_type_endian_big(Type *t) {
 	t = core_type(t);
 	if (t->kind == Type_Basic) {
 		if (t->Basic.flags & BasicFlag_EndianBig) {
@@ -1373,15 +1381,13 @@ bool is_type_integer_endian_big(Type *t) {
 		}
 		return build_context.endian_kind == TargetEndian_Big;
 	} else if (t->kind == Type_BitSet) {
-		return is_type_integer_endian_big(bit_set_to_int(t));
+		return is_type_endian_big(bit_set_to_int(t));
 	} else if (t->kind == Type_Pointer) {
-		return is_type_integer_endian_big(&basic_types[Basic_uintptr]);
+		return is_type_endian_big(&basic_types[Basic_uintptr]);
 	}
 	return build_context.endian_kind == TargetEndian_Big;
 }
-
-
-bool is_type_integer_endian_little(Type *t) {
+bool is_type_endian_little(Type *t) {
 	t = core_type(t);
 	if (t->kind == Type_Basic) {
 		if (t->Basic.flags & BasicFlag_EndianLittle) {
@@ -1391,17 +1397,23 @@ bool is_type_integer_endian_little(Type *t) {
 		}
 		return build_context.endian_kind == TargetEndian_Little;
 	} else if (t->kind == Type_BitSet) {
-		return is_type_integer_endian_little(bit_set_to_int(t));
+		return is_type_endian_little(bit_set_to_int(t));
 	} else if (t->kind == Type_Pointer) {
-		return is_type_integer_endian_little(&basic_types[Basic_uintptr]);
+		return is_type_endian_little(&basic_types[Basic_uintptr]);
 	}
 	return build_context.endian_kind == TargetEndian_Little;
 }
-bool is_type_endian_big(Type *t) {
-	return is_type_integer_endian_big(t);
-}
-bool is_type_endian_little(Type *t) {
-	return is_type_integer_endian_little(t);
+
+bool is_type_endian_platform(Type *t) {
+	t = core_type(t);
+	if (t->kind == Type_Basic) {
+		return (t->Basic.flags & (BasicFlag_EndianLittle|BasicFlag_EndianBig)) == 0;
+	} else if (t->kind == Type_BitSet) {
+		return is_type_endian_platform(bit_set_to_int(t));
+	} else if (t->kind == Type_Pointer) {
+		return is_type_endian_platform(&basic_types[Basic_uintptr]);
+	}
+	return false;
 }
 
 bool types_have_same_internal_endian(Type *a, Type *b) {
@@ -1457,9 +1469,9 @@ bool is_type_dereferenceable(Type *t) {
 bool is_type_different_to_arch_endianness(Type *t) {
 	switch (build_context.endian_kind) {
 	case TargetEndian_Little:
-		return !is_type_integer_endian_little(t);
+		return !is_type_endian_little(t);
 	case TargetEndian_Big:
-		return !is_type_integer_endian_big(t);
+		return !is_type_endian_big(t);
 	}
 	return false;
 }
@@ -1469,7 +1481,7 @@ Type *integer_endian_type_to_platform_type(Type *t) {
 	if (t->kind == Type_BitSet) {
 		t = bit_set_to_int(t);
 	}
-	GB_ASSERT(t->kind == Type_Basic);
+	GB_ASSERT_MSG(t->kind == Type_Basic, "%s", type_to_string(t));
 
 	switch (t->Basic.kind) {
 	// Endian Specific Types
@@ -1909,6 +1921,18 @@ bool is_type_comparable(Type *t) {
 			}
 		}
 		return true;
+
+	case Type_Union:
+		if (type_size_of(t) == 0) {
+			return false;
+		}
+		for_array(i, t->Union.variants) {
+			Type *v = t->Union.variants[i];
+			if (!is_type_comparable(v)) {
+				return false;
+			}
+		}
+		return true;
 	}
 	return false;
 }
@@ -1953,7 +1977,8 @@ bool is_type_simple_compare(Type *t) {
 				return false;
 			}
 		}
-		return true;
+		// make it dumb on purpose
+		return t->Union.variants.count == 1;
 
 	case Type_SimdVector:
 		return is_type_simple_compare(t->SimdVector.elem);
@@ -2149,12 +2174,8 @@ bool are_types_identical(Type *x, Type *y) {
 
 	case Type_SimdVector:
 		if (y->kind == Type_SimdVector) {
-			if (x->SimdVector.is_x86_mmx == y->SimdVector.is_x86_mmx) {
-				if (x->SimdVector.is_x86_mmx) {
-					return true;
-				} else if (x->SimdVector.count == y->SimdVector.count) {
-					return are_types_identical(x->SimdVector.elem, y->SimdVector.elem);
-				}
+			if (x->SimdVector.count == y->SimdVector.count) {
+				return are_types_identical(x->SimdVector.elem, y->SimdVector.elem);
 			}
 		}
 		break;
@@ -2210,7 +2231,6 @@ i64 union_tag_size(Type *u) {
 		return 0;
 	}
 
-#if 1
 	// TODO(bill): Is this an okay approach?
 	i64 max_align = 1;
 	for_array(i, u->Union.variants) {
@@ -2221,15 +2241,8 @@ i64 union_tag_size(Type *u) {
 		}
 	}
 
-	u->Union.tag_size = gb_min(max_align, build_context.max_align);
-	return max_align;
-#else
-	i64 bytes = next_pow2(cast(i64)(floor_log2(n)/8 + 1));
-	i64 tag_size = gb_max(bytes, 1);
-
-	u->Union.tag_size = tag_size;
-	return tag_size;
-#endif
+	u->Union.tag_size = gb_min3(max_align, build_context.max_align, 8);
+	return u->Union.tag_size;
 }
 
 Type *union_tag_type(Type *u) {
@@ -2720,7 +2733,7 @@ void type_path_print_illegal_cycle(TypePath *tp, isize start_index) {
 	GB_ASSERT(start_index < tp->path.count);
 	Entity *e = tp->path[start_index];
 	GB_ASSERT(e != nullptr);
-	error(e->token, "Illegal declaration cycle of `%.*s`", LIT(e->token.string));
+	error(e->token, "Illegal type declaration cycle of `%.*s`", LIT(e->token.string));
 	// NOTE(bill): Print cycle, if it's deep enough
 	for (isize j = start_index; j < tp->path.count; j++) {
 		Entity *e = tp->path[j];
@@ -2764,7 +2777,36 @@ void type_path_pop(TypePath *tp) {
 
 i64 type_size_of_internal (Type *t, TypePath *path);
 i64 type_align_of_internal(Type *t, TypePath *path);
+i64 type_size_of(Type *t);
+i64 type_align_of(Type *t);
 
+i64 type_size_of_struct_pretend_is_packed(Type *ot) {
+	if (ot == nullptr) {
+		return 0;
+	}
+	Type *t = core_type(ot);
+	if (t->kind != Type_Struct) {
+		return type_size_of(ot);
+	}
+
+	if (t->Struct.is_packed) {
+		return type_size_of(ot);
+	}
+
+	i64 count = 0, size = 0, align = 1;
+
+	auto const &fields = t->Struct.fields;
+	count = fields.count;
+	if (count == 0) {
+		return 0;
+	}
+
+	for_array(i, fields) {
+		size += type_size_of(fields[i]->type);
+	}
+
+	return align_formula(size, align);
+}
 
 
 i64 type_size_of(Type *t) {
@@ -2808,6 +2850,8 @@ i64 type_align_of_internal(Type *t, TypePath *path) {
 	if (t->failure) {
 		return FAILURE_ALIGNMENT;
 	}
+	gb_mutex_lock(&g_type_mutex);
+	defer (gb_mutex_unlock(&g_type_mutex));
 
 	t = base_type(t);
 
@@ -2954,9 +2998,6 @@ i64 type_align_of_internal(Type *t, TypePath *path) {
 	}
 
 	case Type_SimdVector: {
-		if (t->SimdVector.is_x86_mmx) {
-			return 8;
-		}
 		// align of
 		i64 count = t->SimdVector.count;
 		Type *elem = t->SimdVector.elem;
@@ -3005,6 +3046,9 @@ Array<i64> type_set_offsets_of(Array<Entity *> const &fields, bool is_packed, bo
 }
 
 bool type_set_offsets(Type *t) {
+	gb_mutex_lock(&g_type_mutex);
+	defer (gb_mutex_unlock(&g_type_mutex));
+
 	t = base_type(t);
 	if (t->kind == Type_Struct) {
 		if (!t->Struct.are_offsets_set) {
@@ -3033,6 +3077,9 @@ i64 type_size_of_internal(Type *t, TypePath *path) {
 	if (t->failure) {
 		return FAILURE_SIZE;
 	}
+	gb_mutex_lock(&g_type_mutex);
+	defer (gb_mutex_unlock(&g_type_mutex));
+
 
 	switch (t->kind) {
 	case Type_Named: {
@@ -3220,9 +3267,6 @@ i64 type_size_of_internal(Type *t, TypePath *path) {
 	}
 
 	case Type_SimdVector: {
-		if (t->SimdVector.is_x86_mmx) {
-			return 8;
-		}
 		i64 count = t->SimdVector.count;
 		Type *elem = t->SimdVector.elem;
 		return count * type_size_of_internal(elem, path);
@@ -3605,9 +3649,14 @@ gbString write_type_to_string(gbString str, Type *type) {
 
 		switch (type->Proc.calling_convention) {
 		case ProcCC_Odin:
+			if (default_calling_convention() != ProcCC_Odin) {
+				str = gb_string_appendc(str, " \"odin\" ");
+			}
 			break;
 		case ProcCC_Contextless:
-			str = gb_string_appendc(str, " \"contextless\" ");
+			if (default_calling_convention() != ProcCC_Contextless) {
+				str = gb_string_appendc(str, " \"contextless\" ");
+			}
 			break;
 		case ProcCC_CDecl:
 			str = gb_string_appendc(str, " \"cdecl\" ");
@@ -3621,6 +3670,9 @@ gbString write_type_to_string(gbString str, Type *type) {
 			break;
 		case ProcCC_None:
 			str = gb_string_appendc(str, " \"none\" ");
+			break;
+		case ProcCC_Naked:
+			str = gb_string_appendc(str, " \"naked\" ");
 			break;
 		// case ProcCC_VectorCall:
 		// 	str = gb_string_appendc(str, " \"vectorcall\" ");
@@ -3657,12 +3709,8 @@ gbString write_type_to_string(gbString str, Type *type) {
 		break;
 
 	case Type_SimdVector:
-		if (type->SimdVector.is_x86_mmx) {
-			return gb_string_appendc(str, "intrinsics.x86_mmx");
-		} else {
-			str = gb_string_append_fmt(str, "#simd[%d]", cast(int)type->SimdVector.count);
-			str = write_type_to_string(str, type->SimdVector.elem);
-		}
+		str = gb_string_append_fmt(str, "#simd[%d]", cast(int)type->SimdVector.count);
+		str = write_type_to_string(str, type->SimdVector.elem);
 		break;
 
 	case Type_RelativePointer:

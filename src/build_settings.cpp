@@ -10,7 +10,6 @@ enum TargetOsKind {
 	TargetOs_darwin,
 	TargetOs_linux,
 	TargetOs_essence,
-	TargetOs_js,
 	TargetOs_freebsd,
 
 	TargetOs_freestanding,
@@ -44,7 +43,6 @@ String target_os_names[TargetOs_COUNT] = {
 	str_lit("darwin"),
 	str_lit("linux"),
 	str_lit("essence"),
-	str_lit("js"),
 	str_lit("freebsd"),
 
 	str_lit("freestanding"),
@@ -71,9 +69,11 @@ TargetEndianKind target_endians[TargetArch_COUNT] = {
 	TargetEndian_Little,
 };
 
+#ifndef ODIN_VERSION_RAW
+#define ODIN_VERSION_RAW "dev-unknown-unknown"
+#endif
 
-
-String const ODIN_VERSION = str_lit("0.13.1");
+String const ODIN_VERSION = str_lit(ODIN_VERSION_RAW);
 
 
 
@@ -104,6 +104,7 @@ enum BuildModeKind {
 	BuildMode_DynamicLibrary,
 	BuildMode_Object,
 	BuildMode_Assembly,
+	BuildMode_LLVM_IR,
 };
 
 enum CommandKind : u32 {
@@ -113,7 +114,7 @@ enum CommandKind : u32 {
 	Command_query   = 1<<4,
 	Command_doc     = 1<<5,
 	Command_version = 1<<6,
-	Command_test     = 1<<7,
+	Command_test    = 1<<7,
 
 	Command__does_check = Command_run|Command_build|Command_check|Command_query|Command_doc|Command_test,
 	Command__does_build = Command_run|Command_build|Command_test,
@@ -135,6 +136,7 @@ char const *odin_command_strings[32] = {
 enum CmdDocFlag : u32 {
 	CmdDocFlag_Short       = 1<<0,
 	CmdDocFlag_AllPackages = 1<<1,
+	CmdDocFlag_DocFormat   = 1<<2,
 };
 
 
@@ -169,8 +171,6 @@ struct BuildContext {
 	String resource_filepath;
 	String pdb_filepath;
 	bool   has_resource;
-	String opt_flags;
-	String llc_flags;
 	String link_flags;
 	String extra_linker_flags;
 	String microarch;
@@ -197,21 +197,27 @@ struct BuildContext {
 	bool   keep_object_files;
 	bool   disallow_do;
 	bool   insert_semicolon;
-	bool   strict_style;
+
 
 	bool   ignore_warnings;
 	bool   warnings_as_errors;
-
-	bool   use_llvm_api;
+	bool   show_error_line;
 
 	bool   use_subsystem_windows;
 	bool   ignore_microsoft_magic;
 	bool   linker_map_file;
 
+	bool use_separate_modules;
+	bool threaded_checker;
+
+	bool show_debug_messages;
+
 	u32 cmd_doc_flags;
 	Array<String> extra_packages;
 
 	QueryDataSetSettings query_data_set_settings;
+
+	StringSet test_names;
 
 	gbAffinity affinity;
 	isize      thread_count;
@@ -307,8 +313,8 @@ gb_global TargetMetrics target_essence_amd64 = {
 	str_lit("x86_64-pc-none-elf"),
 };
 
-gb_global TargetMetrics target_js_wasm32 = {
-	TargetOs_js,
+gb_global TargetMetrics target_freestanding_wasm32 = {
+	TargetOs_freestanding,
 	TargetArch_wasm32,
 	4,
 	8,
@@ -325,15 +331,15 @@ struct NamedTargetMetrics {
 
 gb_global NamedTargetMetrics named_targets[] = {
 	{ str_lit("darwin_amd64"),   &target_darwin_amd64   },
-	{ str_lit("darwin_arm64"), &target_darwin_arm64 },
+	{ str_lit("darwin_arm64"),   &target_darwin_arm64   },
 	{ str_lit("essence_amd64"),  &target_essence_amd64  },
-	{ str_lit("js_wasm32"),      &target_js_wasm32      },
 	{ str_lit("linux_386"),      &target_linux_386      },
 	{ str_lit("linux_amd64"),    &target_linux_amd64    },
 	{ str_lit("windows_386"),    &target_windows_386    },
 	{ str_lit("windows_amd64"),  &target_windows_amd64  },
 	{ str_lit("freebsd_386"),    &target_freebsd_386    },
 	{ str_lit("freebsd_amd64"),  &target_freebsd_amd64  },
+	{ str_lit("freestanding_wasm32"), &target_freestanding_wasm32 },
 };
 
 NamedTargetMetrics *selected_target_metrics;
@@ -438,6 +444,14 @@ bool find_library_collection_path(String name, String *path) {
 	return false;
 }
 
+bool is_arch_wasm(void) {
+	return build_context.metrics.arch == TargetArch_wasm32;
+}
+
+bool allow_check_foreign_filepath(void) {
+	return build_context.metrics.arch != TargetArch_wasm32;
+}
+
 
 // TODO(bill): OS dependent versions for the BuildContext
 // join_path
@@ -449,8 +463,35 @@ bool find_library_collection_path(String name, String *path) {
 String const WIN32_SEPARATOR_STRING = {cast(u8 *)"\\", 1};
 String const NIX_SEPARATOR_STRING   = {cast(u8 *)"/",  1};
 
-#if defined(GB_SYSTEM_WINDOWS)
+
+String internal_odin_root_dir(void);
 String odin_root_dir(void) {
+	if (global_module_path_set) {
+		return global_module_path;
+	}
+
+	gbAllocator a = heap_allocator();
+	char const *found = gb_get_env("ODIN_ROOT", a);
+	if (found) {
+		String path = path_to_full_path(a, make_string_c(found));
+		if (path[path.len-1] != '/' && path[path.len-1] != '\\') {
+		#if defined(GB_SYSTEM_WINDOWS)
+			path = concatenate_strings(a, path, WIN32_SEPARATOR_STRING);
+		#else
+			path = concatenate_strings(a, path, NIX_SEPARATOR_STRING);
+		#endif
+		}
+
+		global_module_path = path;
+		global_module_path_set = true;
+		return global_module_path;
+	}
+	return internal_odin_root_dir();
+}
+
+
+#if defined(GB_SYSTEM_WINDOWS)
+String internal_odin_root_dir(void) {
 	String path = global_module_path;
 	isize len, i;
 	gbTempArenaMemory tmp;
@@ -509,7 +550,7 @@ String odin_root_dir(void) {
 
 String path_to_fullpath(gbAllocator a, String s);
 
-String odin_root_dir(void) {
+String internal_odin_root_dir(void) {
 	String path = global_module_path;
 	isize len, i;
 	gbTempArenaMemory tmp;
@@ -567,7 +608,7 @@ String odin_root_dir(void) {
 
 String path_to_fullpath(gbAllocator a, String s);
 
-String odin_root_dir(void) {
+String internal_odin_root_dir(void) {
 	String path = global_module_path;
 	isize len, i;
 	gbTempArenaMemory tmp;
@@ -716,6 +757,9 @@ String get_fullpath_core(gbAllocator a, String path) {
 	return path_to_fullpath(a, res);
 }
 
+bool show_error_line(void) {
+	return build_context.show_error_line;
+}
 
 
 void init_build_context(TargetMetrics *cross_target) {
@@ -778,22 +822,12 @@ void init_build_context(TargetMetrics *cross_target) {
 	bc->word_size   = metrics->word_size;
 	bc->max_align   = metrics->max_align;
 	bc->link_flags  = str_lit(" ");
-	bc->opt_flags   = str_lit(" ");
 
-
-	gbString llc_flags = gb_string_make_reserve(heap_allocator(), 64);
-	if (bc->ODIN_DEBUG) {
-		// llc_flags = gb_string_appendc(llc_flags, "-debug-compile ");
-	}
 
 	// NOTE(zangent): The linker flags to set the build architecture are different
 	// across OSs. It doesn't make sense to allocate extra data on the heap
 	// here, so I just #defined the linker flags to keep things concise.
 	if (bc->metrics.arch == TargetArch_amd64) {
-		if (bc->microarch.len == 0) {
-			llc_flags = gb_string_appendc(llc_flags, "-march=x86-64 ");
-		}
-
 		switch (bc->metrics.os) {
 		case TargetOs_windows:
 			bc->link_flags = str_lit("/machine:x64 ");
@@ -808,10 +842,6 @@ void init_build_context(TargetMetrics *cross_target) {
 			break;
 		}
 	} else if (bc->metrics.arch == TargetArch_386) {
-		if (bc->microarch.len == 0) {
-			llc_flags = gb_string_appendc(llc_flags, "-march=x86 ");
-		}
-
 		switch (bc->metrics.os) {
 		case TargetOs_windows:
 			bc->link_flags = str_lit("/machine:x86 ");
@@ -828,18 +858,10 @@ void init_build_context(TargetMetrics *cross_target) {
 			break;
 		}
 	} else if (bc->metrics.arch == TargetArch_arm64) {
-		if (bc->microarch.len == 0) {
-			llc_flags = gb_string_appendc(llc_flags, "-march=arm64 ");
-		}
-
 		switch (bc->metrics.os) {
 		case TargetOs_darwin:
 			bc->link_flags = str_lit("-arch arm64 ");
 			break;
-		}
-		if (!bc->use_llvm_api) {
-			gb_printf_err("The arm64 architecture is only supported with -llvm-api\n");;
-			gb_exit(1);
 		}
 
 	} else if (bc->metrics.arch == TargetArch_wasm32) {
@@ -848,49 +870,8 @@ void init_build_context(TargetMetrics *cross_target) {
 		gb_printf_err("Compiler Error: Unsupported architecture\n");;
 		gb_exit(1);
 	}
-	llc_flags = gb_string_appendc(llc_flags, " ");
-
 
 	bc->optimization_level = gb_clamp(bc->optimization_level, 0, 3);
-
-	gbString opt_flags = gb_string_make_reserve(heap_allocator(), 64);
-
-	if (bc->microarch.len != 0) {
-		opt_flags = gb_string_appendc(opt_flags, "-march=");
-		opt_flags = gb_string_append_length(opt_flags, bc->microarch.text, bc->microarch.len);
-		opt_flags = gb_string_appendc(opt_flags, " ");
-
-		// llc_flags = gb_string_appendc(opt_flags, "-march=");
-		// llc_flags = gb_string_append_length(llc_flags, bc->microarch.text, bc->microarch.len);
-		// llc_flags = gb_string_appendc(llc_flags, " ");
-	}
-
-
-	if (bc->optimization_level != 0) {
-		opt_flags = gb_string_append_fmt(opt_flags, "-O%d ", bc->optimization_level);
-		// NOTE(lachsinc): The following options were previously passed during call
-		// to opt in main.cpp:exec_llvm_opt().
-		//   -die:       Dead instruction elimination
-		//   -memcpyopt: MemCpy optimization
-	}
-	if (bc->ODIN_DEBUG == false) {
-		opt_flags = gb_string_appendc(opt_flags, "-mem2reg -die ");
-	}
-
-
-
-
-
-	// NOTE(lachsinc): This optimization option was previously required to get
-	// around an issue in fmt.odin. Thank bp for tracking it down! Leaving for now until the issue
-	// is resolved and confirmed by Bill. Maybe it should be readded in non-debug builds.
-	// if (bc->ODIN_DEBUG == false) {
-	// 	opt_flags = gb_string_appendc(opt_flags, "-mem2reg ");
-	// }
-
-	bc->opt_flags = make_string_c(opt_flags);
-	bc->llc_flags = make_string_c(llc_flags);
-
 
 	#undef LINK_FLAG_X64
 	#undef LINK_FLAG_386
